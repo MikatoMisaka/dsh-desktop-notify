@@ -10,7 +10,7 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 ## 触发规则
 
-**默认只在窗口最小化 / 收进托盘时提醒**——窗口摆在眼前的时候，你已经看见了，不打扰。
+**默认只要 DSH 不在前台就提醒**（`trigger: unfocused`）——你切走去干别的、最小化、收进托盘、锁屏，都算。
 
 | 时机 | 通知标题 |
 | --- | --- |
@@ -21,7 +21,7 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 **不弹**的情况（刻意为之）：
 
-- 窗口还开着（`document.visibilityState === 'visible'`）—— 除非把 `trigger` 改成 `unfocused` 或 `always`；
+- 你正把窗口开着、焦点在 DSH，而且看的就是这条会话 —— 你已经看见了，不打扰（`trigger: always` 可以连这个也弹）；
 - 子智能体 / 派生会话的完成 —— 由父会话那一轮统一提醒，否则多智能体时会刷屏；
 - 同一会话 1.5 秒内的重复事件，以及 10 秒内超过 6 条 —— 限流，防止状态抖动刷屏。
 
@@ -33,12 +33,14 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 **但这一步只让窗口"露出来"，不会把它带到最前面**：真正 show/focus 的是本来就在后台的旧进程，它没有前台权限（foreground right）——新进程拿到的那份权限随着它退出一起消失了。所以链路还有第二段：
 
-窗口恢复可见后，浏览器半边向 `/pending` 取回「刚才那条通知属于哪个会话」，再 POST `/focus` 让 Host 跑 `scripts/focus-window.ps1`：
+窗口恢复可见后，浏览器半边向 `/pending` 取回「刚才那条通知属于哪个会话」，再 POST `/focus` 让 Host 跑 `scripts/focus-window.ps1`。脚本每一轮做四件事，最多重试 5 轮，每轮用 `GetForegroundWindow()` 核对：
 
-1. `ShowWindow(SW_RESTORE)` —— 最小化状态下 `SetForegroundWindow` 是无效的；
-2. `Interaction.AppActivate`（内部走 `AttachThreadInput`）；
-3. 不行就自己 `AttachThreadInput` 到当前前台线程，再 `BringWindowToTop` + `SetForegroundWindow`；
-4. 最后 `GetForegroundWindow()` 核对是否真的换成了 DSH 的窗口句柄，输出一行 JSON。
+1. `keybd_event` 打一次 ALT 按下/抬起 —— 让本进程"刚收到过输入"，拿到前台资格（关键一步，光靠下面几招在 Win11 上经常被拒）；
+2. `ShowWindow(SW_RESTORE)` + `Interaction.AppActivate`（内部走 `AttachThreadInput`）；
+3. 自己 `AttachThreadInput` 到当前前台线程，再 `BringWindowToTop` + `SetForegroundWindow`；
+4. 还不行就 `SwitchToThisWindow` + `SetWindowPos` 的 topmost 抖动，强制改 z 序。
+
+结果写进 `%LOCALAPPDATA%\dsh-desktop-notify\focus.log`（`ok` / `rounds` / `before` / `after` 句柄），置顶这件事从此可核对，不靠"看起来有没有反应"。
 
 置顶完成后再调 `ctx.uiWorkspace.openSession(sessionId)` 切到那个会话，然后清掉 pending。
 
@@ -78,16 +80,16 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
     aumid: com.deepseek.dsh   # Windows 通知的署名 AppUserModelID（默认值就是这个）
     sound: true               # false 则静音弹窗
     debug: true               # false 则不再写排障日志
-    trigger: minimized        # minimized（默认）| unfocused | always
+    trigger: unfocused        # unfocused（默认）| minimized | always
 ```
 
 `trigger` 的三档：
 
 | 值 | 什么时候弹 |
 | --- | --- |
-| `minimized`（默认） | 只在窗口最小化 / 收进托盘 / 不可见时 |
-| `unfocused` | 只要窗口不在焦点就弹（摆着但你在别的窗口做事也算） |
-| `always` | 总是弹，包括你正盯着这个会话（验收自测用） |
+| `unfocused`（默认） | 只要 DSH 不在前台就弹；在前台但你停在别的会话上也弹 |
+| `minimized` | 只在窗口最小化 / 收进托盘 / 不可见时 |
+| `always` | 总是弹，包括你正盯着这条会话（自测用） |
 
 ### AUMID 是这套东西最容易踩的坑
 

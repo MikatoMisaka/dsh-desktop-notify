@@ -70,7 +70,7 @@ globalThis.fetch = async (url, init) => {
   const method = init?.method ?? 'GET'
 
   if (target.endsWith('/config')) {
-    return { ok: true, status: 200, json: async () => ({ trigger: 'minimized', sound: true }) }
+    return { ok: true, status: 200, json: async () => ({ trigger: 'unfocused', sound: true }) }
   }
   if (target.endsWith('/pending')) {
     if (method === 'POST') {
@@ -173,42 +173,52 @@ const expect = (condition, message) => {
   }
 }
 
-// ── 触发判定 ──────────────────────────────────────────────
+// ── 触发判定（默认 trigger: unfocused）────────────────────
 rows({ s1: { title: '整理本周会议纪要' } })
 status({})
 await take('初始')
 
-// 1. 窗口开着（可见），跑完 —— 不该弹
+// 1. 窗口可见、但你在别的会话上 —— 应该弹
 doc.visibilityState = 'visible'
+doc.hasFocus = () => true
 status({ s1: { running: true, pendingInteraction: undefined } })
 status({ s1: { running: false, pendingInteraction: undefined } })
-const visible = await take('窗口可见时完成')
+const backgroundDone = await take('窗口在前台但停在别的会话')
 
-// 2. 最小化后跑完 —— 应该弹
+// 2. 窗口可见、你正看着这个会话 —— 不该弹
+rows({ s1: { title: '整理本周会议纪要', retainedBy: { mainView: 1 } } })
+status({ s1: { running: true, pendingInteraction: undefined } })
+status({ s1: { running: false, pendingInteraction: undefined } })
+const watchingDone = await take('正看着该会话时完成')
+
+// 3. 最小化后跑完 —— 应该弹
 doc.visibilityState = 'hidden'
+doc.hasFocus = () => false
 status({ s1: { running: true, pendingInteraction: undefined } })
 status({ s1: { running: false, pendingInteraction: undefined } })
 const done = await take('最小化后完成')
 
-// 3. 最小化时出现提问 —— 应该弹
+// 4. 最小化时出现提问 —— 应该弹
 status({ s1: { running: true, pendingInteraction: undefined } })
 status({ s1: { running: true, pendingInteraction: { kind: 'question' } } })
 const asked = await take('最小化时提问')
 
-// 4. 最小化时工具确认 —— 应该弹，带工具名
+// 5. 最小化时工具确认 —— 应该弹，带工具名
 status({ s1: { running: true, pendingInteraction: undefined } })
 status({ s1: { running: true, pendingInteraction: { kind: 'approval', toolName: 'shell' } } })
 const approval = await take('最小化时工具确认')
 
-// 5. 子智能体完成 —— 不该弹
+// 6. 子智能体完成 —— 不该弹
 rows({ s3: { title: '子任务：抓取页面', depth: 1, parentSessionId: 's1' } })
 status({ s3: { running: true, pendingInteraction: undefined } })
 status({ s3: { running: false, pendingInteraction: undefined } })
 const child = await take('子智能体完成')
 
-// 6. 通知里必须带上 sessionId —— 点通知才知道跳哪
+// 7. 通知里必须带上 sessionId —— 点通知才知道跳哪
 expect(done.length === 1 && done[0].sessionId === 's1', '完成通知没带 sessionId')
 expect(asked.length === 1 && asked[0].sessionId === 's1', '提问通知没带 sessionId')
+expect(backgroundDone.length === 1, '不在前台时应该弹')
+expect(watchingDone.length === 0, '正看着该会话时不该弹')
 
 // ── 点通知 → 窗口恢复 → 切会话 ─────────────────────────────
 // 模拟：主机记下"刚才那条通知是 s1 的"，窗口从最小化恢复
@@ -259,8 +269,6 @@ expect(events.includes('transition'), '没有发出 transition 诊断')
 expect(events.includes('navigate'), '没有发出 navigate 诊断')
 console.log('诊断日志 ->', diagnostics.length, '条，事件类型：', [...new Set(events)].join(', '))
 
-expect(visible.length === 0, '窗口可见时不该弹')
-expect(done.length >= 0, 'reachable')
 expect(asked[0].title === 'DSH 有问题要问你', '提问文案不对')
 expect(approval[0].title === 'DSH 需要你确认', '确认文案不对')
 expect(child.length === 0, '子智能体不该弹')
