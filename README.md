@@ -35,6 +35,7 @@ DeepSeek Harness 桌面端（Windows）的通知插件。
 | 键 | 默认值 | 含义 |
 | --- | --- | --- |
 | `aumid` | `com.deepseek.dsh` | 通知署名的 AppUserModelID。写错会静默丢 toast。 |
+| `fallbackAumid` | Windows PowerShell 自己的 ID | 主署名抛错时用它再发一次，保证通知不会彻底消失（署名会显示成 Windows PowerShell）。 |
 | `sound` | `true` | 是否带提示音。 |
 | `trigger` | `unfocused` | `unfocused` / `minimized` / `always`；仅当用户没在设置里选过时生效。 |
 | `protocol` | `true` | 是否在启动时登记 `dsh-notify:` 协议（点通知的快路径）。 |

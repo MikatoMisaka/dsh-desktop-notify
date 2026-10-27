@@ -24,6 +24,7 @@
     "bin",
     "scripts",
     "native",
+    "skills",
     "selftest.mjs",
     "client-selftest.mjs",
     "cordis.patch.yml",
