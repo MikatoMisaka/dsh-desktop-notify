@@ -56,8 +56,12 @@ let posted = []
 const diagnostics = []
 const fallbacks = []
 globalThis.fetch = async (url, init) => {
+  const target = String(url)
+  if (target.endsWith('/config')) {
+    return { ok: true, status: 200, json: async () => ({ notifyWhenFocused: false, sound: true }) }
+  }
   const payload = JSON.parse(init.body)
-  if (String(url).endsWith('/log')) diagnostics.push(payload)
+  if (target.endsWith('/log')) diagnostics.push(payload)
   else posted.push(payload)
   return { ok: true, status: 200 }
 }
