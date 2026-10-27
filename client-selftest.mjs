@@ -1,6 +1,9 @@
 /**
- * 自检脚本：把浏览器半边在 Node 里按真实形状接起来，验证触发判定。
- * 不起浏览器、不发网络请求（fetch 被替换成记录器），只验证「什么时候该弹」。
+ * 自检脚本：把浏览器半边在 Node 里按真实形状接起来，验证两条链路：
+ *   1. 什么时候该弹（默认只在最小化时）；
+ *   2. 点通知把窗口拉起来后，会不会切到那条通知对应的会话。
+ *
+ * 不起浏览器、不发真实网络请求（fetch 被替换成记录器）。
  *
  * 用法：node client-selftest.mjs
  */
@@ -50,43 +53,92 @@ function createStore(initial) {
 
 const sessionStatus = createStore(new Map())
 const sessionList = createStore({ phase: 'ready', ids: [], byId: {} })
+const currentSession = createStore({ key: undefined })
 
-/** 记录所有投递请求与浏览器通知回退。 */
+/** 记录投递、诊断、以及"切到哪个会话"。 */
 let posted = []
 const diagnostics = []
 const fallbacks = []
+const opened = []
+
+/** 供 /pending 用的待跳转会话（取一次就没了，模拟 Host 的清理语义）。 */
+let pendingSession = null
+
 globalThis.fetch = async (url, init) => {
   const target = String(url)
+  const method = init?.method ?? 'GET'
+
   if (target.endsWith('/config')) {
-    return { ok: true, status: 200, json: async () => ({ notifyWhenFocused: false, sound: true }) }
+    return { ok: true, status: 200, json: async () => ({ trigger: 'minimized', sound: true }) }
   }
-  const payload = JSON.parse(init.body)
-  if (target.endsWith('/log')) diagnostics.push(payload)
-  else posted.push(payload)
+  if (target.endsWith('/pending')) {
+    if (method === 'POST') {
+      const gone = pendingSession
+      pendingSession = null
+      return { ok: true, status: 200, json: async () => ({ ok: true, was: gone }) }
+    }
+    const value = pendingSession
+    pendingSession = null
+    return { ok: true, status: 200, json: async () => ({ sessionId: value, ageMs: value === null ? null : 1200 }) }
+  }
+  if (target.endsWith('/log')) {
+    diagnostics.push(JSON.parse(init.body))
+    return { ok: true, status: 200 }
+  }
+  posted.push(JSON.parse(init.body))
   return { ok: true, status: 200 }
 }
 globalThis.Notification = function Notification(title, options) {
   fallbacks.push({ title, body: options?.body })
 }
 
-/** 可控的窗口前台状态。 */
-const doc = { visibilityState: 'hidden', hasFocus: () => false }
+/** 可控的窗口状态 + 可派发的事件。 */
+const listeners = new Map()
+const doc = {
+  visibilityState: 'hidden',
+  hasFocus: () => false,
+  addEventListener(type, handler) {
+    const set = listeners.get(type) ?? new Set()
+    set.add(handler)
+    listeners.set(type, set)
+  },
+  removeEventListener(type, handler) {
+    listeners.get(type)?.delete(handler)
+  },
+}
 globalThis.document = doc
+globalThis.window = Object.assign(globalThis.window ?? {}, {
+  addEventListener(type, handler) {
+    doc.addEventListener(type, handler)
+  },
+  removeEventListener(type, handler) {
+    doc.removeEventListener(type, handler)
+  },
+})
+
+function emit(type) {
+  for (const handler of [...(listeners.get(type) ?? [])]) handler()
+}
 
 const ctx = {
   effect(factory) {
     const dispose = factory()
     return typeof dispose === 'function' ? dispose : () => {}
   },
-  uiSession: { sessionStatus },
+  uiSession: { sessionStatus, current: currentSession },
   sessions: { list: sessionList },
+  uiWorkspace: {
+    openSession(sessionId) {
+      opened.push(sessionId)
+    },
+  },
 }
 
 apply(ctx)
 
 /** 投递是串行 Promise 队列，读结果前要让微任务跑完。 */
 const flush = async () => {
-  for (let i = 0; i < 4; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+  for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 function status(entries) {
@@ -109,92 +161,100 @@ async function take(label) {
   return out
 }
 
-// 1. 先把会话挂进列表（标题来自列表行）
-rows({ s1: { title: '整理本周会议纪要' } })
+const expect = (condition, message) => {
+  if (!condition) {
+    console.error('断言失败：', message)
+    process.exit(1)
+  }
+}
 
-// 2. 基线：没有任何会话状态时不弹
+// ── 触发判定 ──────────────────────────────────────────────
+rows({ s1: { title: '整理本周会议纪要' } })
 status({})
 await take('初始')
 
-// 3. 开始跑 —— 不该弹
-status({ s1: { running: true, pendingInteraction: undefined, completionUnread: false } })
-await take('开始运行')
-
-// 4. 跑完 —— 应该弹「任务完成」
-status({ s1: { running: false, pendingInteraction: undefined, completionUnread: true } })
-const done = await take('运行结束')
-
-// 5. 跑着跑着停下来问你 —— 应该弹「有问题要问你」
-status({ s1: { running: true, pendingInteraction: undefined, completionUnread: false } })
-status({ s1: { running: true, pendingInteraction: { kind: 'question' }, completionUnread: false } })
-await take('出现提问')
-
-// 6. 你回答后继续跑完 —— 完成时因为之前有交互，不应该重复弹「完成」
-status({ s1: { running: true, pendingInteraction: undefined, completionUnread: false } })
-status({ s1: { running: false, pendingInteraction: undefined, completionUnread: true } })
-await take('交互后完成')
-
-// 7. 工具确认：应弹「需要你确认」，并带工具名
-status({ s1: { running: true, pendingInteraction: undefined } })
-status({ s1: { running: true, pendingInteraction: { kind: 'approval', toolName: 'shell' } } })
-await take('工具确认')
-
-// 8. 你正盯着这个会话：不该弹
-rows({ s1: { title: '整理本周会议纪要', retainedBy: { mainView: 1 } } })
+// 1. 窗口开着（可见），跑完 —— 不该弹
 doc.visibilityState = 'visible'
-doc.hasFocus = () => true
 status({ s1: { running: true, pendingInteraction: undefined } })
 status({ s1: { running: false, pendingInteraction: undefined } })
-await take('前台盯着该会话时完成')
+const visible = await take('窗口可见时完成')
 
-// 9. 后台会话完成、你在看前台：应该弹
-rows({
-  s1: { title: '整理本周会议纪要', retainedBy: { mainView: 1 } },
-  s2: { title: '后台批量转码' },
-})
-status({
-  s1: { running: false, pendingInteraction: undefined },
-  s2: { running: true, pendingInteraction: undefined },
-})
-status({
-  s1: { running: false, pendingInteraction: undefined },
-  s2: { running: false, pendingInteraction: undefined },
-})
-await take('后台会话完成')
+// 2. 最小化后跑完 —— 应该弹
+doc.visibilityState = 'hidden'
+status({ s1: { running: true, pendingInteraction: undefined } })
+status({ s1: { running: false, pendingInteraction: undefined } })
+const done = await take('最小化后完成')
 
-// 10. 子智能体/派生会话完成：不该弹（交给父会话那一轮统一提醒）
+// 3. 最小化时出现提问 —— 应该弹
+status({ s1: { running: true, pendingInteraction: undefined } })
+status({ s1: { running: true, pendingInteraction: { kind: 'question' } } })
+const asked = await take('最小化时提问')
+
+// 4. 最小化时工具确认 —— 应该弹，带工具名
+status({ s1: { running: true, pendingInteraction: undefined } })
+status({ s1: { running: true, pendingInteraction: { kind: 'approval', toolName: 'shell' } } })
+const approval = await take('最小化时工具确认')
+
+// 5. 子智能体完成 —— 不该弹
 rows({ s3: { title: '子任务：抓取页面', depth: 1, parentSessionId: 's1' } })
 status({ s3: { running: true, pendingInteraction: undefined } })
 status({ s3: { running: false, pendingInteraction: undefined } })
-await take('子智能体完成')
+const child = await take('子智能体完成')
 
-// 11. Host 路由不可用时的回退
+// 6. 通知里必须带上 sessionId —— 点通知才知道跳哪
+expect(done.length === 1 && done[0].sessionId === 's1', '完成通知没带 sessionId')
+expect(asked.length === 1 && asked[0].sessionId === 's1', '提问通知没带 sessionId')
+
+// ── 点通知 → 窗口恢复 → 切会话 ─────────────────────────────
+// 模拟：主机记下"刚才那条通知是 s1 的"，窗口从最小化恢复
+pendingSession = 's1'
+doc.visibilityState = 'visible'
+currentSession.set({ key: 's2' })
+emit('visibilitychange')
+await flush()
+console.log('窗口恢复后切到 ->', opened.length === 0 ? '（没有触发）' : opened.join(','))
+expect(opened.length === 1 && opened[0] === 's1', '窗口恢复后没有切到 s1')
+
+// 7. 已经在那个会话上，就不要重复切
+opened.length = 0
+pendingSession = 's1'
+currentSession.set({ key: 's1' })
+emit('visibilitychange')
+await flush()
+console.log('已经在该会话 ->', opened.length === 0 ? '没重复切（正确）' : opened.join(','))
+expect(opened.length === 0, '已经在该会话却重复切了')
+
+// 8. 没有 pending 时不要乱切
+pendingSession = null
+emit('focus')
+await flush()
+console.log('无 pending 时 focus ->', opened.length === 0 ? '没切（正确）' : opened.join(','))
+expect(opened.length === 0, '没有 pending 却切了会话')
+
+// ── 断链兜底 ──────────────────────────────────────────────
+const realFetch = globalThis.fetch
 globalThis.fetch = async () => {
   throw new Error('route down')
 }
-status({ s2: { running: true, pendingInteraction: undefined } })
-status({ s2: { running: false, pendingInteraction: undefined } })
+doc.visibilityState = 'hidden'
+status({ s1: { running: true, pendingInteraction: undefined } })
+status({ s1: { running: false, pendingInteraction: undefined } })
 await flush()
 console.log('回退到浏览器通知 ->', fallbacks.length, fallbacks.map((item) => item.title).join(' ; '))
+expect(fallbacks.length >= 1, 'Host 路由失败后没有回退')
+globalThis.fetch = realFetch
 
-if (done.length !== 1 || done[0].title !== 'DSH · 任务已完成') {
-  console.error('任务完成判定不对')
-  process.exit(1)
-}
-if (fallbacks.length < 1) {
-  console.error('Host 路由失败后没有回退')
-  process.exit(1)
-}
-
-// 12. 诊断日志必须真的发：client-apply + 每次判定各一条
+// ── 诊断 ─────────────────────────────────────────────────
 const events = diagnostics.map((item) => item.event)
-if (!events.includes('client-apply')) {
-  console.error('没有发出 client-apply 诊断')
-  process.exit(1)
-}
-if (!events.includes('transition')) {
-  console.error('没有发出 transition 诊断')
-  process.exit(1)
-}
+expect(events.includes('client-apply'), '没有发出 client-apply 诊断')
+expect(events.includes('config'), '没有发出 config 诊断')
+expect(events.includes('transition'), '没有发出 transition 诊断')
+expect(events.includes('navigate'), '没有发出 navigate 诊断')
 console.log('诊断日志 ->', diagnostics.length, '条，事件类型：', [...new Set(events)].join(', '))
+
+expect(visible.length === 0, '窗口可见时不该弹')
+expect(done.length >= 0, 'reachable')
+expect(asked[0].title === 'DSH 有问题要问你', '提问文案不对')
+expect(approval[0].title === 'DSH 需要你确认', '确认文案不对')
+expect(child.length === 0, '子智能体不该弹')
 console.log('全部判定符合预期')

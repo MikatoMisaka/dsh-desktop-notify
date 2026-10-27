@@ -10,6 +10,8 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 ## 触发规则
 
+**默认只在窗口最小化 / 收进托盘时提醒**——窗口摆在眼前的时候，你已经看见了，不打扰。
+
 | 时机 | 通知标题 |
 | --- | --- |
 | 一轮任务从「运行中」结束，且没有等你回答的东西 | `DSH · 任务已完成` |
@@ -19,11 +21,23 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 **不弹**的情况（刻意为之）：
 
-- 你正把窗口开着、焦点就在这个会话上 —— 你已经看见了，不必再弹；
+- 窗口还开着（`document.visibilityState === 'visible'`）—— 除非把 `trigger` 改成 `unfocused` 或 `always`；
 - 子智能体 / 派生会话的完成 —— 由父会话那一轮统一提醒，否则多智能体时会刷屏；
 - 同一会话 1.5 秒内的重复事件，以及 10 秒内超过 6 条 —— 限流，防止状态抖动刷屏。
 
-被通知的那条会话如果不在前台，标题下面会带会话名（取会话列表里显示的名字）。
+正文会带会话名（取会话列表里显示的名字）。
+
+## 点通知 → 回到那条会话
+
+通知用 `activationType="protocol"` + `launch="dsh://open"`。DSH 安装器登记了 `dsh:` 协议（command 是 `"<exe>" "%1"`），单实例锁会把这次启动转成 `second-instance` → `focusPrimaryWindow()`，也就是 `restore()` + `show()` + `focus()`。
+
+窗口回到前台后，浏览器半边监听到 `visibilitychange`（hidden → visible），向 Host 的 `/pending` 取回「刚才那条通知属于哪个会话」，调 `ctx.uiWorkspace.openSession(sessionId)` 切过去，然后把 pending 清掉。
+
+两个刻意的取舍：
+
+- pending 有 2 分钟保鲜期：点得太晚就只把窗口拉起来，不强行跳会话；
+- 已经在那个会话上就不重复切；
+- 只有 `visibilitychange` 会触发跳转，普通 alt-tab 回一个本来就可见的窗口不会跳（那样才不会莫名换会话）。
 
 ## 为什么有 Host 和浏览器两半
 
@@ -31,10 +45,10 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 所以分工是：
 
-- **浏览器半边**（`lib/client.js`）：判断「该不该提醒」，然后向 Host 发一个同源 POST；
-- **Host 半边**（`lib/index.js`）：用 PowerShell 调 WinRT `ToastNotificationManager`，显式带安装器登记的 AUMID（默认 `DeepSeek Harness`），AUMID 没登记时回退到进程默认 ID。
+- **浏览器半边**（`lib/client.js`）：判断「该不该提醒」，判定通过后带 `sessionId` 向 Host 发一个同源 POST；
+- **Host 半边**（`lib/index.js`）：用 PowerShell 调 WinRT `ToastNotificationManager`，显式带安装器登记的 AUMID（默认 `com.deepseek.dsh`），并记住这条通知指向的会话以便点击回跳。
 
-万一 Host 路由不可用（插件版本不匹配、路由被禁用），浏览器半边会回退到 `new Notification()`，至少还能在网页/桌面端弹一条。
+万一 Host 路由不可用（插件版本不匹配、路由被禁用），浏览器半边会回退到 `new Notification()`，至少还能在网页/桌面端弹一条（只是点击不带跳转）。
 
 ## 路由安全
 
@@ -55,7 +69,16 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
     aumid: com.deepseek.dsh   # Windows 通知的署名 AppUserModelID（默认值就是这个）
     sound: true               # false 则静音弹窗
     debug: true               # false 则不再写排障日志
+    trigger: minimized        # minimized（默认）| unfocused | always
 ```
+
+`trigger` 的三档：
+
+| 值 | 什么时候弹 |
+| --- | --- |
+| `minimized`（默认） | 只在窗口最小化 / 收进托盘 / 不可见时 |
+| `unfocused` | 只要窗口不在焦点就弹（摆着但你在别的窗口做事也算） |
+| `always` | 总是弹，包括你正盯着这个会话（验收自测用） |
 
 ### AUMID 是这套东西最容易踩的坑
 
@@ -79,8 +102,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\read-aumid.ps1
 | `"kind":"client","event":"client-apply"` | 浏览器半边也进图了 | — |
 | 只有 `host-ready`，没有 `client-apply` | 浏览器半边没加载 | 看 DevTools Console 有没有 `[dsh-desktop-notify] 已就绪`；检查 `dsh.client` 声明与 `exports["./client"]` |
 | `"kind":"notify"` 且 `"spawned":true` | 通知已经交给 PowerShell | 桌面没看到 → AUMID 不对，跑 `read-aumid.ps1` |
-| `"kind":"client","event":"transition","action":"skip-watching"` | 判定你在看这个会话，故意不弹 | 切走再试 |
+| `"kind":"client","event":"transition","action":"skip-visible"` | 窗口开着，按默认规则不弹 | 最小化再试，或把 `trigger` 改成 `unfocused` |
+| `"kind":"client","event":"transition","action":"skip-watching"` | `trigger: unfocused` 下，你正看着这个会话 | 正常 |
 | `"kind":"notify-skipped","reason":"duplicate"` | 被 1.5 秒去重挡了 | 正常 |
+| `"kind":"client","event":"navigate"` | 窗口恢复后切到了对应会话 | — |
+| `"kind":"client","event":"navigate-skip"` | 已经在该会话，没重复切 | 正常 |
+
+点通知不跳会话时按顺序看：`dsh:` 协议是否登记（`Get-ItemProperty HKCU:\Software\Classes\dsh`）→ 日志里有没有 `navigate` → pending 是否已过期（2 分钟）。
 
 快速验证通道（不启动 DSH、不碰会话）：
 

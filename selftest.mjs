@@ -26,21 +26,23 @@ const ctx = {
 
 apply(ctx, {})
 
-if (routes.length !== 3) {
-  console.error('期望注册 3 条路由（notify + log + config），实际', routes.length)
+if (routes.length !== 4) {
+  console.error('期望注册 4 条路由（notify + log + config + pending），实际', routes.length)
   process.exit(1)
 }
 
 const route = routes.find((candidate) => candidate.path.endsWith('/notify'))
 const logRoute = routes.find((candidate) => candidate.path.endsWith('/log'))
 const configRoute = routes.find((candidate) => candidate.path.endsWith('/config'))
-if (route === undefined || logRoute === undefined || configRoute === undefined) {
+const pendingRoute = routes.find((candidate) => candidate.path.endsWith('/pending'))
+if (route === undefined || logRoute === undefined || configRoute === undefined || pendingRoute === undefined) {
   console.error('路由不齐:', routes.map((candidate) => candidate.path).join(', '))
   process.exit(1)
 }
 console.log('route:', route.kind, route.path)
 console.log('log route:', logRoute.kind, logRoute.path)
 console.log('config route:', configRoute.kind, configRoute.path)
+console.log('pending route:', pendingRoute.kind, pendingRoute.path)
 
 /** 极简 req：异步可迭代的 body + 大小写不敏感的表头。 */
 function makeRequest({ method, headers, body }) {
@@ -109,6 +111,39 @@ const dup = await call(
   })
 )
 console.log('POST 同 key 立即重发 ->', dup.status, dup.body)
+
+// pending：通知过哪个会话，窗口恢复时就要能取回来；取完要能被清掉。
+const withSession = await call(
+  makeRequest({
+    method: 'POST',
+    headers: { host: '127.0.0.1:5441' },
+    body: JSON.stringify({ title: '带会话的通知', body: '用来验证点通知跳会话', key: 'pending-probe', sessionId: 'session-abc' }),
+  })
+)
+console.log('POST 带 sessionId ->', withSession.status, withSession.body)
+
+async function callPending(method) {
+  const res = makeResponse()
+  await pendingRoute.handler(makeRequest({ method, headers: { host: '127.0.0.1:5441' } }), res)
+  return { status: res.status, body: res.body }
+}
+
+const pendingGet = await callPending('GET')
+console.log('GET /pending ->', pendingGet.status, pendingGet.body)
+if (!pendingGet.body.includes('session-abc')) {
+  console.error('pending 没记下 sessionId')
+  process.exit(1)
+}
+
+const cleared = await callPending('POST')
+console.log('POST /pending（清空）->', cleared.status, cleared.body)
+
+const afterClear = await callPending('GET')
+console.log('再 GET /pending ->', afterClear.status, afterClear.body)
+if (afterClear.body.includes('session-abc')) {
+  console.error('pending 清空失败')
+  process.exit(1)
+}
 
 // 给 PowerShell 子进程留出弹 toast 的时间。
 await new Promise((resolve) => setTimeout(resolve, 2500))
