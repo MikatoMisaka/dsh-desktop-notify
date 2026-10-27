@@ -49,7 +49,7 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 几个刻意的取舍：
 
-- pending 有 2 分钟保鲜期：点得太晚就只把窗口拉起来，不强行跳会话；
+- pending 有 1 分钟保鲜期：点得太晚（或干脆是自己把窗口拉回来的）就只留窗口，不强行跳会话；
 - 已经在那个会话上就不重复切，但仍会置顶；
 - 只有 `visibilitychange` 会触发跳转，普通 alt-tab 回一个本来就可见的窗口不会跳；
 - 没有 `bin\focus-window.exe`（没编译）时自动退回 `dsh://open`——能用，只是慢。
@@ -132,10 +132,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\read-aumid.ps1
 | `"kind":"client","event":"navigate"` | 窗口恢复后切到了对应会话 | — |
 | `"kind":"client","event":"navigate-skip"` | 已经在该会话，没重复切 | 正常 |
 | `"kind":"focus-requested"` | 已请求置顶，`via` 是 `exe`（快路）还是 `powershell`（退路） | 没提到最前 → 手动跑 `bin\focus-window.exe` 看返回码 |
-| `"kind":"protocol"` | 启动时登记 `dsh-notify:` 协议的结果（`registered`） | false → 手动跑 `npm run protocol:install` |
+| `"kind":"focus-exit","code":0` | 置顶程序的退出码（0 成功 / 1 找不到窗口 / 2 被系统拒） | 非 0 时看是否有多显示器、全屏独占程序 |
+| `"kind":"protocol"` | 启动时登记 `dsh-notify:` 协议的结果（`registered` / `exe`） | false → 跑 `npm run protocol:install` |
 | `"kind":"focus-spawn-error"` | 置顶程序没起来 | 检查 `bin\focus-window.exe` 是否存在、是否被杀软拦 |
+| `"kind":"notify"` 且 HTTP 503 | PowerShell 没拉起来，已回退浏览器通知 | 检查杀软是否拦了 powershell.exe |
 
-点通知不跳会话时按顺序看：`dsh-notify:` / `dsh:` 协议是否登记（`Get-ItemProperty HKCU:\Software\Classes\dsh-notify`）→ 日志里有没有 `navigate` → pending 是否已过期（2 分钟）。
+日志超过 1MB 会自动轮转成 `host.log.1`，不用手动清。
+
+点通知不跳会话时按顺序看：`dsh-notify:` / `dsh:` 协议是否登记（`Get-ItemProperty HKCU:\Software\Classes\dsh-notify`）→ 日志里有没有 `navigate` → pending 是否已过期（1 分钟）。
 
 > 手动核对置顶：`bin\focus-window.exe`（返回码 0 = 成功提到前台；2 = 尝试过但被系统拒；1 = 找不到窗口）。走 PowerShell 退路时会另外写 `%LOCALAPPDATA%\dsh-desktop-notify\focus.log`，里面有 `before` / `after` 句柄。
 
@@ -211,3 +215,6 @@ node client-selftest.mjs  # 浏览器半边：什么情况下该弹、什么情�
 - [ ] **M4 排障**：`/plugins/dsh-desktop-notify/selftest` 路由（点一下就知道通道通不通）
 - [ ] **M5 分发**：`npm pack` 产物 + 安装说明，发到 DSH 插件仓库（Gitee / GitHub）
 - [ ] **M6 静音与时间窗**：`sound`、安静时段、按会话类型（定时任务 / 子智能体）分别开关
+- [ ] **M7 通知本身的延迟**：现在每条 toast 要起一个 `powershell.exe` 再加载 WinRT（约 400~700ms）。
+  体感上是"任务完成后通知稍晚出现"，不影响点击速度。可选方案：常驻一个 PowerShell 子进程
+  走命名管道，或把 Toast 也搬进那个 C# 程序（要处理 WinRT 的 winmd 引用，成本较高）

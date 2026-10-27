@@ -264,17 +264,30 @@ expect(asked.length === 1 && asked[0].sessionId === 's1', '提问通知没带 se
 expect(backgroundDone.length === 1, '不在前台时应该弹')
 expect(watchingDone.length === 0, '正看着该会话时不该弹')
 
-// ── 点通知 → 窗口恢复 → 切会话 ─────────────────────────────
-// 模拟：主机记下"刚才那条通知是 s1 的"，窗口从最小化恢复
+// ── 点通知 → 窗口恢复 → 置顶 → 切会话 ─────────────────────
+// 窗口恢复可见但还没拿到焦点（协议激活没生效时的情形）：要补一次置顶
 pendingSession = 's1'
 doc.visibilityState = 'visible'
+doc.hasFocus = () => false
 currentSession.set({ key: 's2' })
 emit('visibilitychange')
 await flush()
 console.log('窗口恢复后切到 ->', opened.length === 0 ? '（没有触发）' : opened.join(','))
 expect(opened.length === 1 && opened[0] === 's1', '窗口恢复后没有切到 s1')
 console.log('置顶请求 ->', focusCalls.length, '次')
-expect(focusCalls.length >= 1, '窗口恢复后没有请求置顶')
+expect(focusCalls.length === 1, '没拿到焦点时应该补一次置顶')
+
+// 已经在前台（协议激活的 exe 成功了）：不再多叫一次置顶
+opened.length = 0
+focusCalls.length = 0
+pendingSession = 's1'
+doc.hasFocus = () => true
+currentSession.set({ key: 's3' })
+emit('visibilitychange')
+await flush()
+console.log('已有焦点 ->', `置顶 ${focusCalls.length} 次 / 切换 ${opened.length} 次`)
+expect(opened.length === 1 && opened[0] === 's1', '已有焦点时仍应切会话')
+expect(focusCalls.length === 0, '已有焦点时不该再叫置顶')
 
 // 7. 已经在那个会话上，就不要重复切
 opened.length = 0
