@@ -1,10 +1,21 @@
 /**
  * 自检脚本：不启动 DSH，直接把 Host 半边按真实 ctx 形状接起来跑一遍。
- * 覆盖：路由注册、来源校验、Content-Type、限流去重、pending 的 token 语义、真实弹通知。
+ * 覆盖：路由注册、来源校验、Content-Type、限流去重、pending 的 token 语义、通知通道。
  *
- * 用法：node selftest.mjs        （会真的弹一条通知，用来验证通知通道本身）
+ * 用法：
+ *   node selftest.mjs          默认 dry-run：走完整流程但不弹窗（自动化/CI 用这个）
+ *   node selftest.mjs --live   真的发通知，用来验证通道本身
  */
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { apply } from './lib/index.js'
+
+/** 默认不打扰桌面：只有显式 --live（或 DSH_NOTIFY_LIVE=1）才真发。 */
+const live = process.argv.includes('--live') || process.env.DSH_NOTIFY_LIVE === '1'
+
+/** 独立数据目录：不读真实运行态的日志/click.json，也不往里写。 */
+const dataDir = mkdtempSync(join(tmpdir(), 'dsh-notify-selftest-'))
 
 /** 收集 apply 期间注册的路由。 */
 const routes = []
@@ -24,7 +35,9 @@ const ctx = {
 }
 
 // protocol:false —— 自检不往真实注册表写东西；这也让 /pending 走"退路模式"分支。
-apply(ctx, { protocol: false })
+// dryRun 默认开：走完整通知流程但不 spawn PowerShell，不往桌面弹测试通知。
+apply(ctx, { protocol: false, dryRun: !live, dataDir })
+console.log(live ? '模式：live（会真的弹通知）' : '模式：dry-run（不弹窗；要真发加 --live）')
 
 if (routes.length !== 5) {
   console.error('期望注册 5 条路由（notify + log + config + pending + focus），实际', routes.length)
@@ -152,6 +165,13 @@ expect(JSON.parse(afterClear.body).sessionId === null, '清空后不应再返回
 const config = await call(configRoute, makeRequest({ method: 'GET', headers: { host: HOST } }))
 console.log('GET /config ->', config.status, config.body)
 
-// 给 PowerShell 子进程留出弹 toast 的时间。
-await new Promise((resolve) => setTimeout(resolve, 2500))
+// 真发模式下给 PowerShell 子进程留出弹 toast 的时间。
+if (live) await new Promise((resolve) => setTimeout(resolve, 2500))
+
+// 清理临时数据目录
+try {
+  rmSync(dataDir, { recursive: true, force: true })
+} catch {
+  // 删不掉也无所谓，在系统临时目录里。
+}
 console.log('done')

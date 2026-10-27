@@ -120,7 +120,7 @@ try {
     & node 'client-selftest.mjs' | Select-Object -Last 1
     if ($LASTEXITCODE -ne 0) { throw 'client-selftest 失败' }
     if (-not $SkipLive) {
-      & node 'selftest.mjs' | Select-Object -Last 1
+      & node 'selftest.mjs' '--live' | Select-Object -Last 3
       if ($LASTEXITCODE -ne 0) { throw 'selftest 失败' }
     } else {
       Write-Output '    （已跳过 host 自检：-SkipLive）'

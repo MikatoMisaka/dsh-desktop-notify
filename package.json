@@ -17,7 +17,7 @@
     "protocol:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-protocol.ps1 -Uninstall",
     "setup": "npm run build:focus && npm run protocol:install",
     "test": "node client-selftest.mjs",
-    "test:live": "node client-selftest.mjs && node selftest.mjs"
+    "test:live": "node client-selftest.mjs && node selftest.mjs --live"
   },
   "files": [
     "lib",

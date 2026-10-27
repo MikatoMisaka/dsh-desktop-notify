@@ -36,7 +36,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-npm.ps1 -Nam
 3. 拷一份暂存副本到 `%TEMP%\dsh-notify-publish-<pid>-<rand>`（不动工作区、不动本地已装的那份）；
 4. 改写副本的 `package.json`（name / version / private / author / repository / homepage / bugs / engines / publishConfig），**读取时显式用 UTF-8**（5.1 默认 ANSI 会把中文 description 读成乱码）；
 5. **同步改名**：`cordis.patch.yml` 的 `name:` 与 `lib/client.js` 的 `id:` 一起改成新包名，然后断言三处一致——DSH 用包名当 client 模块 entry id，漏改会硬抛 `loaded without registering`；
-6. 跑 `client-selftest.mjs`（安静）+ `selftest.mjs`（真弹 2 条）；
+6. 跑 `client-selftest.mjs`（安静）+ `selftest.mjs --live`（真弹通知，验证通道；`-SkipLive` 可跳过）；
 7. 用 `npm pack --dry-run --json` 断言关键文件真的进了 tarball（`package.json` / `lib/*` / `cordis.patch.yml` / `bin/focus-window.exe` / `skills/.../SKILL.md`）——npm 对 `files` 里不存在的项是**静默忽略**的；
 8. `npm publish --access public`，检查退出码；
 9. 无论成败都清掉暂存目录。

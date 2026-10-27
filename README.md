@@ -40,6 +40,8 @@ DeepSeek Harness 桌面端（Windows）的通知插件。
 | `trigger` | `unfocused` | `unfocused` / `minimized` / `always`；仅当用户没在设置里选过时生效。 |
 | `protocol` | `true` | 是否登记 `dsh-notify:` 协议（点通知的快路径）。 |
 | `debug` | `true` | 是否写日志 `%LOCALAPPDATA%\dsh-desktop-notify\host.log`。 |
+| `dryRun` | `false` | 仅测试/CI：走完整通知流程但不真的弹窗（`selftest.mjs` 默认开）。 |
+| `dataDir` | `%LOCALAPPDATA%\dsh-desktop-notify` | 日志与 `click.json` 的目录；仅测试时改用临时目录。 |
 | `notifyWhenFocused` | — | 已弃用，`true` 等价于 `trigger: always`。 |
 
 **AUMID 写错不会报错，只会把 toast 静默丢掉**。启动时若发现配置的 AUMID 不在开始菜单的 AppID 列表里，插件会记一条 `aumid-unregistered` 并改用备用身份；想用回 DSH 自己的署名，跑 `scripts\read-aumid.ps1` 取真实值。
