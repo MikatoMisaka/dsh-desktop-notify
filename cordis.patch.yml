@@ -1,0 +1,4 @@
+# 把插件本体挂进 profile。幂等：同一 id 只会存在一个实例。
+- insert:
+    - id: desktop-notify
+      name: dsh-desktop-notify
