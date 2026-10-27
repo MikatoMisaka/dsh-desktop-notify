@@ -24,7 +24,7 @@ const ctx = {
   logger: { warn() {}, info() {}, debug() {} },
 }
 
-apply(ctx, {})
+apply(ctx, { protocol: false })
 
 if (routes.length !== 5) {
   console.error('期望注册 5 条路由（notify + log + config + pending + focus），实际', routes.length)

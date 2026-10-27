@@ -29,26 +29,30 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 ## 点通知 → 回到那条会话
 
-通知用 `activationType="protocol"` + `launch="dsh://open"`。DSH 安装器登记了 `dsh:` 协议（command 是 `"<exe>" "%1"`），单实例锁会把这次启动转成 `second-instance` → `focusPrimaryWindow()`，也就是 `restore()` + `show()` + `focus()`。
+通知是 `activationType="protocol"`，点击交给 Windows 去开一个 URI。**用哪个 URI 决定快慢**：
 
-**但这一步只让窗口"露出来"，不会把它带到最前面**：真正 show/focus 的是本来就在后台的旧进程，它没有前台权限（foreground right）——新进程拿到的那份权限随着它退出一起消失了。所以链路还有第二段：
+| 方案 | 点击后发生什么 | 实测到前台 |
+| --- | --- | --- |
+| `dsh://open` | 启动一个**完整的第二个 Electron 进程**，跑完初始化才走到单实例检查、然后退出；旧进程这才 `restore()+show()` | 9000ms 超时仍未置顶 |
+| `dsh-notify://focus`（默认，需 `bin\focus-window.exe`） | 直接跑一个 5.5KB 的 C# 小程序：`SW_RESTORE` + 前台资格绕过 + 置顶 | **94ms** |
 
-窗口恢复可见后，浏览器半边向 `/pending` 取回「刚才那条通知属于哪个会话」，再 POST `/focus` 让 Host 跑 `scripts/focus-window.ps1`。脚本每一轮做四件事，最多重试 5 轮，每轮用 `GetForegroundWindow()` 核对：
+早先只做到"恢复窗口"，没做到"到前台"，原因是前台权限（foreground right）跟着那个立刻退出的新进程一起消失了——真正 show 窗口的是本来就在后台的旧进程。
 
-1. `keybd_event` 打一次 ALT 按下/抬起 —— 让本进程"刚收到过输入"，拿到前台资格（关键一步，光靠下面几招在 Win11 上经常被拒）；
-2. `ShowWindow(SW_RESTORE)` + `Interaction.AppActivate`（内部走 `AttachThreadInput`）；
-3. 自己 `AttachThreadInput` 到当前前台线程，再 `BringWindowToTop` + `SetForegroundWindow`；
-4. 还不行就 `SwitchToThisWindow` + `SetWindowPos` 的 topmost 抖动，强制改 z 序。
+现在 `dsh-notify:` 协议指向 `bin\focus-window.exe`，**这个进程是用户点击直接拉起的，天生带前台权限**，所以 `SetForegroundWindow` 会被放行。程序内部：
 
-结果写进 `%LOCALAPPDATA%\dsh-desktop-notify\focus.log`（`ok` / `rounds` / `before` / `after` 句柄），置顶这件事从此可核对，不靠"看起来有没有反应"。
+1. `keybd_event` 再补一次"刚收到输入"的假象（双保险）；
+2. `SW_RESTORE` + `AttachThreadInput` + `BringWindowToTop` + `SetForegroundWindow`；
+3. 还不行就 `SwitchToThisWindow` + `SetWindowPos` 的 topmost 抖动；
+4. 最多 12 轮、每轮 25ms，命中就退。
 
-置顶完成后再调 `ctx.uiWorkspace.openSession(sessionId)` 切到那个会话，然后清掉 pending。
+窗口恢复后，浏览器半边监听到 `visibilitychange`，向 `/pending` 取回「这条通知属于哪个会话」，调 `ctx.uiWorkspace.openSession(sessionId)` 切过去，再把 pending 清掉。`/focus` 路由仍然保留，作为"协议没登记成功"时的保险（它也会优先跑同一个 exe）。
 
 几个刻意的取舍：
 
 - pending 有 2 分钟保鲜期：点得太晚就只把窗口拉起来，不强行跳会话；
 - 已经在那个会话上就不重复切，但仍会置顶；
-- 只有 `visibilitychange` 会触发跳转，普通 alt-tab 回一个本来就可见的窗口不会跳（那样才不会莫名换会话）。
+- 只有 `visibilitychange` 会触发跳转，普通 alt-tab 回一个本来就可见的窗口不会跳；
+- 没有 `bin\focus-window.exe`（没编译）时自动退回 `dsh://open`——能用，只是慢。
 
 ## 为什么有 Host 和浏览器两半
 
@@ -97,6 +101,7 @@ UI 那一整段包在 `try/catch` 里，且用 `ctx.inject(['slots','locale'], �
     sound: true               # false 则静音弹窗
     debug: true               # false 则不再写排障日志
     trigger: unfocused        # 只在用户没在设置里选过时生效
+    protocol: true            # false 则不自动登记 dsh-notify: 协议
 ```
 
 ### AUMID 是这套东西最容易踩的坑
@@ -126,12 +131,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\read-aumid.ps1
 | `"kind":"notify-skipped","reason":"duplicate"` | 被 1.5 秒去重挡了 | 正常 |
 | `"kind":"client","event":"navigate"` | 窗口恢复后切到了对应会话 | — |
 | `"kind":"client","event":"navigate-skip"` | 已经在该会话，没重复切 | 正常 |
-| `"kind":"focus-requested"` | 已请求把窗口提到最前 | 没提到最前 → 手动跑 `scripts\focus-window.ps1` 看它输出的 JSON |
-| `"kind":"focus-spawn-error"` | 置顶脚本没起来 | 检查 `scripts\focus-window.ps1` 是否还在、PowerShell 是否被拦 |
+| `"kind":"focus-requested"` | 已请求置顶，`via` 是 `exe`（快路）还是 `powershell`（退路） | 没提到最前 → 手动跑 `bin\focus-window.exe` 看返回码 |
+| `"kind":"protocol"` | 启动时登记 `dsh-notify:` 协议的结果（`registered`） | false → 手动跑 `npm run protocol:install` |
+| `"kind":"focus-spawn-error"` | 置顶程序没起来 | 检查 `bin\focus-window.exe` 是否存在、是否被杀软拦 |
 
-点通知不跳会话时按顺序看：`dsh:` 协议是否登记（`Get-ItemProperty HKCU:\Software\Classes\dsh`）→ 日志里有没有 `navigate` → pending 是否已过期（2 分钟）。窗口不置顶时看有没有 `focus-requested`，并手动跑一次脚本核对 `foregroundAfter`。
+点通知不跳会话时按顺序看：`dsh-notify:` / `dsh:` 协议是否登记（`Get-ItemProperty HKCU:\Software\Classes\dsh-notify`）→ 日志里有没有 `navigate` → pending 是否已过期（2 分钟）。
 
-> 手动核对置顶：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\focus-window.ps1`，输出 `{"ok":true,...}` 就说明前台句柄确实换成了 DSH 主窗口。
+> 手动核对置顶：`bin\focus-window.exe`（返回码 0 = 成功提到前台；2 = 尝试过但被系统拒；1 = 找不到窗口）。走 PowerShell 退路时会另外写 `%LOCALAPPDATA%\dsh-desktop-notify\focus.log`，里面有 `before` / `after` 句柄。
 
 快速验证通道（不启动 DSH、不碰会话）：
 
@@ -152,8 +158,10 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:<端口>/plugins/dsh-desktop-notify/not
 新机器上装：
 
 1. `git clone <repo> D:\Projects\own\dsh-notify`
-2. 建联接：`New-Item -ItemType Junction -Path <profile>\node_modules\dsh-desktop-notify -Target D:\Projects\own\dsh-notify`
-3. `<profile>\cordis.patch.yml` 末尾追加：
+2. **编译置顶程序**：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build-focus.ps1`
+   （产出 `bin\focus-window.exe`；没编译也能用，只是点击会退回 `dsh://open` 那条慢路）
+3. 建联接：`New-Item -ItemType Junction -Path <profile>\node_modules\dsh-desktop-notify -Target D:\Projects\own\dsh-notify`
+4. `<profile>\cordis.patch.yml` 末尾追加：
 
 ```yaml
 - insert:
@@ -161,7 +169,13 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:<端口>/plugins/dsh-desktop-notify/not
       name: dsh-desktop-notify
 ```
 
-4. 重启 DSH 桌面端（Host 插件和浏览器包都只在启动时装载）
+5. 重启 DSH 桌面端（Host 插件和浏览器包都只在启动时装载）
+
+`dsh-notify:` 协议**不用手动登记**：插件在 Host 启动时（`config.protocol` 不为 false 且 exe 存在）会跑一次 `reg add`，幂等。想手动来一遍或删掉：
+
+```powershell
+npm run protocol:install     # 或 -Uninstall 删掉
+```
 
 > profile 实际路径：`D:\HarnessData\dsh\profiles\desktop`（`C:\Users\<用户>\.dsh` 是指向它的联接）。
 
