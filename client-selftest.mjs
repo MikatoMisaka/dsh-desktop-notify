@@ -53,9 +53,12 @@ const sessionList = createStore({ phase: 'ready', ids: [], byId: {} })
 
 /** 记录所有投递请求与浏览器通知回退。 */
 let posted = []
+const diagnostics = []
 const fallbacks = []
-globalThis.fetch = async (_url, init) => {
-  posted.push(JSON.parse(init.body))
+globalThis.fetch = async (url, init) => {
+  const payload = JSON.parse(init.body)
+  if (String(url).endsWith('/log')) diagnostics.push(payload)
+  else posted.push(payload)
   return { ok: true, status: 200 }
 }
 globalThis.Notification = function Notification(title, options) {
@@ -178,4 +181,16 @@ if (fallbacks.length < 1) {
   console.error('Host 路由失败后没有回退')
   process.exit(1)
 }
+
+// 12. 诊断日志必须真的发：client-apply + 每次判定各一条
+const events = diagnostics.map((item) => item.event)
+if (!events.includes('client-apply')) {
+  console.error('没有发出 client-apply 诊断')
+  process.exit(1)
+}
+if (!events.includes('transition')) {
+  console.error('没有发出 transition 诊断')
+  process.exit(1)
+}
+console.log('诊断日志 ->', diagnostics.length, '条，事件类型：', [...new Set(events)].join(', '))
 console.log('全部判定符合预期')

@@ -52,9 +52,42 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 - id: desktop-notify
   name: dsh-desktop-notify
   config:
-    aumid: DeepSeek Harness   # Windows 通知的署名 AppUserModelID
-    sound: true              # false 则静音弹窗
+    aumid: com.deepseek.dsh   # Windows 通知的署名 AppUserModelID（默认值就是这个）
+    sound: true               # false 则静音弹窗
+    debug: true               # false 则不再写排障日志
 ```
+
+### AUMID 是这套东西最容易踩的坑
+
+Windows 的通知绑定到「开始菜单快捷方式里登记的 AppUserModelID」。字符串写错时 `CreateToastNotifier` **不抛异常**，只是把 toast 静默丢掉——于是现象是"路由 200、桌面一片安静"，很容易误判成插件没装。
+
+v0.1 就踩过：当时默认值是 `DeepSeek Harness`，而安装器登记的是 `com.deepseek.dsh`，所以一条通知都出不来。
+
+换品牌 / 换构筑 / 不确定时，先查真实值：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\read-aumid.ps1
+```
+
+## 排障
+
+日志：`%LOCALAPPDATA%\dsh-desktop-notify\host.log`，一行一个 JSON。
+
+| 日志里看到 | 含义 | 下一步 |
+| --- | --- | --- |
+| `"kind":"host-ready"` | Host 半边装上了 | — |
+| `"kind":"client","event":"client-apply"` | 浏览器半边也进图了 | — |
+| 只有 `host-ready`，没有 `client-apply` | 浏览器半边没加载 | 看 DevTools Console 有没有 `[dsh-desktop-notify] 已就绪`；检查 `dsh.client` 声明与 `exports["./client"]` |
+| `"kind":"notify"` 且 `"spawned":true` | 通知已经交给 PowerShell | 桌面没看到 → AUMID 不对，跑 `read-aumid.ps1` |
+| `"kind":"client","event":"transition","action":"skip-watching"` | 判定你在看这个会话，故意不弹 | 切走再试 |
+| `"kind":"notify-skipped","reason":"duplicate"` | 被 1.5 秒去重挡了 | 正常 |
+
+快速验证通道（不启动 DSH、不碰会话）：
+
+```powershell
+Invoke-WebRequest -Uri 'http://127.0.0.1:<端口>/plugins/dsh-desktop-notify/notify' -Method POST -ContentType 'application/json' -Body '{"title":"通道自检","body":"直接打路由","key":"probe-1"}' -UseBasicParsing
+```
+
 
 ## 安装方式
 

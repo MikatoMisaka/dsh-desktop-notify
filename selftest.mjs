@@ -26,13 +26,19 @@ const ctx = {
 
 apply(ctx, {})
 
-if (routes.length !== 1) {
-  console.error('期望注册 1 条路由，实际', routes.length)
+if (routes.length !== 2) {
+  console.error('期望注册 2 条路由（notify + log），实际', routes.length)
   process.exit(1)
 }
 
-const [route] = routes
+const route = routes.find((candidate) => candidate.path.endsWith('/notify'))
+const logRoute = routes.find((candidate) => candidate.path.endsWith('/log'))
+if (route === undefined || logRoute === undefined) {
+  console.error('路由不齐:', routes.map((candidate) => candidate.path).join(', '))
+  process.exit(1)
+}
 console.log('route:', route.kind, route.path)
+console.log('log route:', logRoute.kind, logRoute.path)
 
 /** 极简 req：异步可迭代的 body + 大小写不敏感的表头。 */
 function makeRequest({ method, headers, body }) {
