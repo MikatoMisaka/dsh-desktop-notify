@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-notify",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "DSH 桌面通知：任务完成、需要你选择/确认时弹出 Windows 通知（操作中心可见）",
   "type": "module",
@@ -13,6 +13,7 @@
   },
   "files": [
     "lib",
+    "scripts",
     "cordis.patch.yml",
     "README.md"
   ],
