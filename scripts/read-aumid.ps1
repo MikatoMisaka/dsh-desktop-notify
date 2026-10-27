@@ -1,20 +1,26 @@
 ﻿# 读出开始菜单快捷方式登记的 AppUserModelID —— 也就是 Windows 通知的署名。
 #
 # Windows 的通知绑定到这个 ID：字符串写错时 CreateToastNotifier 不报错，
-# 只是把 toast 静默丢弃。所以换品牌/换构筑后先跑这个脚本核对。
+# 只是把 toast 静默丢弃（"路由 200、桌面一片安静"）。所以换品牌/换构筑后先跑它核对。
 #
 # 用法：
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\read-aumid.ps1
 #   powershell ... -File scripts\read-aumid.ps1 -Shortcut "C:\path\to\Your App.lnk"
 
 param(
-  [string]$Shortcut = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\WorkBuddy.lnk"
+  # 默认就是 DSH 自己的快捷方式；换品牌时显式传别的。
+  [string]$Shortcut = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\DeepSeek Harness.lnk"
 )
 
 $ErrorActionPreference = 'Stop'
 
 if (-not (Test-Path $Shortcut)) {
   Write-Output "找不到快捷方式：$Shortcut"
+  Write-Output ''
+  Write-Output '开始菜单里现有的候选（挑一个用 -Shortcut 传进去）：'
+  Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs" -Filter *.lnk -ErrorAction SilentlyContinue |
+    ForEach-Object { Write-Output ("  " + $_.FullName) }
+  Write-Output ''
   Write-Output '提示：开始菜单里的 .lnk 才是登记点；直接看 exe 的属性通常为空。'
   exit 1
 }

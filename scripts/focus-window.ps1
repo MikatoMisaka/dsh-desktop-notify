@@ -44,6 +44,10 @@ $logFile = Join-Path $logDir 'focus.log'
 function Write-FocusLog([hashtable]$Entry) {
   try {
     New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+    # 和 host.log 一样轮转，免得常年累积。
+    if ((Test-Path $logFile) -and ((Get-Item $logFile).Length -gt 1000000)) {
+      Move-Item -Path $logFile -Destination "$logFile.1" -Force
+    }
     $Entry['t'] = (Get-Date).ToUniversalTime().ToString('o')
     Add-Content -Path $logFile -Value ($Entry | ConvertTo-Json -Compress) -Encoding UTF8
   } catch {
@@ -51,6 +55,8 @@ function Write-FocusLog([hashtable]$Entry) {
   }
 }
 
+# 退路局限：Process.MainWindowHandle 对"收进托盘"的隐藏窗口返回 0，
+# 这条分支只能处理可见窗口。真正的隐藏窗口要靠 bin\focus-window.exe（EnumWindows）。
 function Get-MainWindow {
   $candidates = @(Get-Process -Name $ProcessName -ErrorAction SilentlyContinue |
     Where-Object { $_.MainWindowHandle -ne [IntPtr]::Zero })
@@ -60,10 +66,13 @@ function Get-MainWindow {
   return $candidates[0]
 }
 
-function Invoke-ForegroundAttempt([IntPtr]$hwnd, [int]$ownerPid) {
-  # 1) 制造"本进程刚收到输入"的假象，拿前台资格。
-  [DshNotify.Win32]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)    # ALT down
-  [DshNotify.Win32]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)    # ALT up
+function Invoke-ForegroundAttempt([IntPtr]$hwnd, [int]$ownerPid, [bool]$nudgeInput) {
+  # 只在第一轮制造"本进程刚收到输入"的假象：每轮都打 ALT 会把按键注入到
+  # 当前占用前台的全屏程序里（菜单被唤起、游戏快捷键误触）。
+  if ($nudgeInput) {
+    [DshNotify.Win32]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero)    # ALT down
+    [DshNotify.Win32]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)    # ALT up
+  }
 
   # 2) AppActivate：失败不算错，后面还有兜底。
   try { [Microsoft.VisualBasic.Interaction]::AppActivate($ownerPid) | Out-Null } catch {}
@@ -122,9 +131,10 @@ if ($minimized -or -not $visible) {
 }
 
 $ok = $false
-$rounds = 0
-for ($rounds = 1; $rounds -le 5; $rounds++) {
-  Invoke-ForegroundAttempt $hwnd $ownerPid
+$tried = 0
+for ($attempt = 1; $attempt -le 5; $attempt++) {
+  $tried = $attempt
+  Invoke-ForegroundAttempt $hwnd $ownerPid ($attempt -eq 1)
   Start-Sleep -Milliseconds 120
   if ([DshNotify.Win32]::GetForegroundWindow() -eq $hwnd) {
     $ok = $true
@@ -137,7 +147,7 @@ $after = [DshNotify.Win32]::GetForegroundWindow()
 Write-FocusLog @{
   event = 'focus'
   ok = $ok
-  rounds = $rounds
+  rounds = $tried
   target = $hwnd.ToInt64()
   minimized = $minimized
   before = $before.ToInt64()
@@ -147,7 +157,7 @@ Write-FocusLog @{
 if (-not $Quiet) {
   [pscustomobject]@{
     ok        = $ok
-    rounds    = $rounds
+    rounds    = $tried
     target    = $hwnd.ToInt64()
     minimized = $minimized
     before    = $before.ToInt64()

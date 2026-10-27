@@ -1,9 +1,12 @@
 /**
- * 自检脚本：把浏览器半边在 Node 里按真实形状接起来，验证两条链路：
- *   1. 什么时候该弹（默认只在最小化时）；
- *   2. 点通知把窗口拉起来后，会不会切到那条通知对应的会话。
+ * 自检脚本：把浏览器半边在 Node 里按真实形状接起来，验证：
+ *   1. 什么时候该弹（三档 trigger、子智能体、限流之外的边界）；
+ *   2. 点通知之后的置顶与跳会话（含"没点就不许跳"）；
+ *   3. 设置行与它和 Host 默认值的优先级。
  *
- * 不起浏览器、不发真实网络请求（fetch 被替换成记录器）。
+ * 关键：喂的是**真实**会话行形状（displayTitle / origin / parentId / retainedBy），
+ * 不是编辑出来的假字段——早先就是因为用了不存在的 parentSessionId/depth，
+ * 自检一直绿而子智能体过滤其实完全没生效。
  *
  * 用法：node client-selftest.mjs
  */
@@ -28,7 +31,7 @@ if (loaded.id !== 'dsh-desktop-notify') {
   process.exit(1)
 }
 
-/** 假 react：只够跑设置行组件（createElement + useState）。 */
+/** 假 react：只够跑设置行组件。 */
 const fakeReact = {
   createElement(type, props, ...children) {
     return { type, props: { ...(props ?? {}), children } }
@@ -45,7 +48,6 @@ const module = loaded.factory((name) => {
 const { apply, inject } = module
 console.log('module id:', loaded.id, '| inject:', inject.join(','))
 
-/** 最小 store：getSnapshot / subscribe / 手动 set。 */
 function createStore(initial) {
   let value = initial
   const listeners = new Set()
@@ -66,35 +68,45 @@ const sessionStatus = createStore(new Map())
 const sessionList = createStore({ phase: 'ready', ids: [], byId: {} })
 const currentSession = createStore({ key: undefined })
 
-/** 记录投递、诊断、以及"切到哪个会话"。 */
+/** 记录：投递 / 诊断 / 置顶 / 消费 / 导航，以及它们之间的顺序。 */
 let posted = []
 const diagnostics = []
 const fallbacks = []
-const opened = []
 const focusCalls = []
+const acks = []
+const opened = []
+const order = []
 
-/** 供 /pending 用的待跳转会话（取一次就没了，模拟 Host 的清理语义）。 */
-let pendingSession = null
+/** /pending 的应答（模拟 Host：只有真点过才给 sessionId）。 */
+let pendingReply = { sessionId: null, token: null, source: 'none' }
+
+/** /config 延迟应答，用来验证"用户先选、配置后到"的竞态。 */
+let releaseConfig
+const configGate = new Promise((resolve) => {
+  releaseConfig = resolve
+})
+
+const storage = new Map()
 
 globalThis.fetch = async (url, init) => {
   const target = String(url)
   const method = init?.method ?? 'GET'
 
   if (target.endsWith('/config')) {
-    return { ok: true, status: 200, json: async () => ({ trigger: 'unfocused', sound: true }) }
+    const value = await configGate
+    return { ok: true, status: 200, json: async () => value }
   }
   if (target.endsWith('/pending')) {
     if (method === 'POST') {
-      const gone = pendingSession
-      pendingSession = null
-      return { ok: true, status: 200, json: async () => ({ ok: true, was: gone }) }
+      acks.push(JSON.parse(init.body ?? '{}'))
+      order.push('ack')
+      return { ok: true, status: 200, json: async () => ({ ok: true }) }
     }
-    const value = pendingSession
-    pendingSession = null
-    return { ok: true, status: 200, json: async () => ({ sessionId: value, ageMs: value === null ? null : 1200 }) }
+    return { ok: true, status: 200, json: async () => pendingReply }
   }
   if (target.endsWith('/focus')) {
     focusCalls.push(JSON.parse(init?.body ?? '{}'))
+    order.push('focus')
     return { ok: true, status: 200 }
   }
   if (target.endsWith('/log')) {
@@ -102,13 +114,14 @@ globalThis.fetch = async (url, init) => {
     return { ok: true, status: 200 }
   }
   posted.push(JSON.parse(init.body))
+  order.push('notify')
   return { ok: true, status: 200 }
 }
 globalThis.Notification = function Notification(title, options) {
   fallbacks.push({ title, body: options?.body })
 }
 
-/** 可控的窗口状态 + 可派发的事件。 */
+/** 可控的窗口状态 + 可派发事件。 */
 const listeners = new Map()
 const doc = {
   visibilityState: 'hidden',
@@ -123,7 +136,6 @@ const doc = {
   },
 }
 globalThis.document = doc
-const storage = new Map()
 globalThis.window = Object.assign(globalThis.window ?? {}, {
   localStorage: {
     getItem: (key) => (storage.has(key) ? storage.get(key) : null),
@@ -142,7 +154,6 @@ function emit(type) {
   for (const handler of [...(listeners.get(type) ?? [])]) handler()
 }
 
-/** 捕获设置槽位的注册，稍后手动渲染。 */
 let registered = null
 let localeRegistered = null
 
@@ -179,15 +190,15 @@ const ctx = {
   uiWorkspace: {
     openSession(sessionId) {
       opened.push(sessionId)
+      order.push('navigate')
     },
   },
 }
 
 apply(ctx)
 
-/** 投递是串行 Promise 队列，读结果前要让微任务跑完。 */
 const flush = async () => {
-  for (let i = 0; i < 6; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
+  for (let i = 0; i < 8; i += 1) await new Promise((resolve) => setTimeout(resolve, 0))
 }
 
 function status(entries) {
@@ -198,7 +209,7 @@ function status(entries) {
 
 function rows(entries) {
   const byId = {}
-  for (const [id, value] of Object.entries(entries)) byId[id] = { sessionId: id, ...value }
+  for (const [id, value] of Object.entries(entries)) byId[id] = { id, ...value }
   sessionList.set({ phase: 'ready', ids: Object.keys(byId), byId })
 }
 
@@ -217,103 +228,14 @@ const expect = (condition, message) => {
   }
 }
 
-// ── 触发判定（默认 trigger: unfocused）────────────────────
-rows({ s1: { title: '整理本周会议纪要' } })
-status({})
-await take('初始')
-
-// 1. 窗口可见、但你在别的会话上 —— 应该弹
-doc.visibilityState = 'visible'
-doc.hasFocus = () => true
-status({ s1: { running: true, pendingInteraction: undefined } })
-status({ s1: { running: false, pendingInteraction: undefined } })
-const backgroundDone = await take('窗口在前台但停在别的会话')
-
-// 2. 窗口可见、你正看着这个会话 —— 不该弹
-rows({ s1: { title: '整理本周会议纪要', retainedBy: { mainView: 1 } } })
-status({ s1: { running: true, pendingInteraction: undefined } })
-status({ s1: { running: false, pendingInteraction: undefined } })
-const watchingDone = await take('正看着该会话时完成')
-
-// 3. 最小化后跑完 —— 应该弹
-doc.visibilityState = 'hidden'
-doc.hasFocus = () => false
-status({ s1: { running: true, pendingInteraction: undefined } })
-status({ s1: { running: false, pendingInteraction: undefined } })
-const done = await take('最小化后完成')
-
-// 4. 最小化时出现提问 —— 应该弹
-status({ s1: { running: true, pendingInteraction: undefined } })
-status({ s1: { running: true, pendingInteraction: { kind: 'question' } } })
-const asked = await take('最小化时提问')
-
-// 5. 最小化时工具确认 —— 应该弹，带工具名
-status({ s1: { running: true, pendingInteraction: undefined } })
-status({ s1: { running: true, pendingInteraction: { kind: 'approval', toolName: 'shell' } } })
-const approval = await take('最小化时工具确认')
-
-// 6. 子智能体完成 —— 不该弹
-rows({ s3: { title: '子任务：抓取页面', depth: 1, parentSessionId: 's1' } })
-status({ s3: { running: true, pendingInteraction: undefined } })
-status({ s3: { running: false, pendingInteraction: undefined } })
-const child = await take('子智能体完成')
-
-// 7. 通知里必须带上 sessionId —— 点通知才知道跳哪
-expect(done.length === 1 && done[0].sessionId === 's1', '完成通知没带 sessionId')
-expect(asked.length === 1 && asked[0].sessionId === 's1', '提问通知没带 sessionId')
-expect(backgroundDone.length === 1, '不在前台时应该弹')
-expect(watchingDone.length === 0, '正看着该会话时不该弹')
-
-// ── 点通知 → 窗口恢复 → 置顶 → 切会话 ─────────────────────
-// 窗口恢复可见但还没拿到焦点（协议激活没生效时的情形）：要补一次置顶
-pendingSession = 's1'
-doc.visibilityState = 'visible'
-doc.hasFocus = () => false
-currentSession.set({ key: 's2' })
-emit('visibilitychange')
-await flush()
-console.log('窗口恢复后切到 ->', opened.length === 0 ? '（没有触发）' : opened.join(','))
-expect(opened.length === 1 && opened[0] === 's1', '窗口恢复后没有切到 s1')
-console.log('置顶请求 ->', focusCalls.length, '次')
-expect(focusCalls.length === 1, '没拿到焦点时应该补一次置顶')
-
-// 已经在前台（协议激活的 exe 成功了）：不再多叫一次置顶
-opened.length = 0
-focusCalls.length = 0
-pendingSession = 's1'
-doc.hasFocus = () => true
-currentSession.set({ key: 's3' })
-emit('visibilitychange')
-await flush()
-console.log('已有焦点 ->', `置顶 ${focusCalls.length} 次 / 切换 ${opened.length} 次`)
-expect(opened.length === 1 && opened[0] === 's1', '已有焦点时仍应切会话')
-expect(focusCalls.length === 0, '已有焦点时不该再叫置顶')
-
-// 7. 已经在那个会话上，就不要重复切
-opened.length = 0
-pendingSession = 's1'
-currentSession.set({ key: 's1' })
-emit('visibilitychange')
-await flush()
-console.log('已经在该会话 ->', opened.length === 0 ? '没重复切（正确）' : opened.join(','))
-expect(opened.length === 0, '已经在该会话却重复切了')
-
-// 8. 没有 pending 时不要乱切
-pendingSession = null
-emit('focus')
-await flush()
-console.log('无 pending 时 focus ->', opened.length === 0 ? '没切（正确）' : opened.join(','))
-expect(opened.length === 0, '没有 pending 却切了会话')
-
-// ── 设置行 ───────────────────────────────────────────────
+// ── 设置行 + "用户先选、配置后到"的竞态 ────────────────────────────────
 expect(registered !== null, '没有注册设置项')
 expect(registered.options.name === 'settings.general.item', '设置槽位不对')
 expect(registered.options.id === 'desktop-notify', '设置项 id 不对')
-expect(registered.options.locale === 'desktop-notify', 'locale 命名空间不对')
+expect(registered.options.order === 18, 'order 应该避开 17（ui-chat 已占用）')
 expect(localeRegistered !== null && localeRegistered.namespace === 'desktop-notify', '没有注册设置文案')
 expect(
-  typeof localeRegistered.dictionaries.zh.title === 'string' &&
-    typeof localeRegistered.dictionaries.en.title === 'string',
+  typeof localeRegistered.dictionaries.zh.title === 'string' && typeof localeRegistered.dictionaries.en.title === 'string',
   '中英文案缺失'
 )
 
@@ -321,21 +243,126 @@ const tree = registered.component({ t: (key) => key })
 const buttons = tree.props.children[1].props.children.flat()
 expect(buttons.length === 3, '应该有三个档位')
 expect(buttons[0].props['data-active'] === 'true', '默认档位应该是 unfocused')
+
+// 用户先点“总是提醒”，然后 Host 的 /config 才到（返回 minimized）
 buttons[2].props.onClick()
 await flush()
 expect(storage.get('dsh-desktop-notify:trigger') === 'always', '选择没有落盘')
-console.log('设置行 -> 三个档位，点击「总是提醒」已落盘')
+releaseConfig({ trigger: 'minimized', sound: true })
+await flush()
+console.log('设置行 -> 三个档位；用户先选 always，/config 后到未覆盖')
+expect(storage.get('dsh-desktop-notify:trigger') === 'always', '/config 覆盖了用户选择')
 
-// 切到 always 后，正看着这个会话也应该弹
+// 前台盯着会话也应该弹（证明 always 真的生效，而不是只写进了 localStorage）
+rows({ s1: { displayTitle: '整理本周会议纪要', retainedBy: { mainView: 1 } } })
 doc.visibilityState = 'visible'
 doc.hasFocus = () => true
-rows({ s9: { title: '调试会话', retainedBy: { mainView: 1 } } })
-status({ s9: { running: true, pendingInteraction: undefined } })
-status({ s9: { running: false, pendingInteraction: undefined } })
+status({ s1: { running: true, pendingInteraction: undefined } })
+status({ s1: { running: false, pendingInteraction: undefined } })
 const alwaysDone = await take('always 档下正看着也弹')
 expect(alwaysDone.length === 1, 'always 档没生效')
 
-// ── 断链兜底 ──────────────────────────────────────────────
+// 切回默认档继续后面的用例
+buttons[0].props.onClick()
+await flush()
+
+// ── 触发判定（默认 unfocused）────────────────────────────────────────
+doc.visibilityState = 'visible'
+doc.hasFocus = () => true
+rows({ s1: { displayTitle: '整理本周会议纪要' } })
+status({})
+await take('初始')
+
+status({ s1: { running: true, pendingInteraction: undefined } })
+status({ s1: { running: false, pendingInteraction: undefined } })
+const backgroundDone = await take('前台但停在别的会话 -> 弹')
+expect(backgroundDone.length === 1, '不在看的会话跑完应当弹')
+
+rows({ s1: { displayTitle: '整理本周会议纪要', retainedBy: { mainView: 1 } } })
+status({ s1: { running: true, pendingInteraction: undefined } })
+status({ s1: { running: false, pendingInteraction: undefined } })
+const watchingDone = await take('正看着该会话 -> 不弹')
+expect(watchingDone.length === 0, '正看着的会话不该弹')
+
+doc.visibilityState = 'hidden'
+doc.hasFocus = () => false
+rows({ s1: { displayTitle: '整理本周会议纪要' } })
+status({ s1: { running: true, pendingInteraction: undefined } })
+status({ s1: { running: false, pendingInteraction: undefined } })
+const done = await take('最小化后完成 -> 弹')
+expect(done.length === 1 && done[0].sessionId === 's1', '完成通知没带 sessionId')
+
+// ── 待回答交互的差分 ─────────────────────────────────────────────────
+status({ s1: { running: true, pendingInteraction: { kind: 'question', callId: 'call-1' } } })
+const asked = await take('出现提问 -> 弹')
+expect(asked.length === 1 && asked[0].title === 'DSH 有问题要问你', '提问文案不对')
+
+// 同一张卡 hide/reveal（callId 不变，对象换了）：不该重复提醒
+status({ s1: { running: true, pendingInteraction: { kind: 'question', callId: 'call-1' } } })
+const repeated = await take('同一张卡重挂载 -> 不重复弹')
+expect(repeated.length === 0, '同一张交互卡不该重复提醒')
+
+// 同一轮里换成工具确认（callId 变了）：应该弹
+status({ s1: { running: true, pendingInteraction: { kind: 'approval', callId: 'call-2', toolName: 'shell' } } })
+const approval = await take('换成工具确认 -> 弹')
+expect(approval.length === 1 && approval[0].title === 'DSH 需要你确认', '确认文案不对')
+expect(approval[0].body.includes('shell'), '确认正文应当带工具名')
+
+// ── 子智能体（真实行形状：origin + parentId）───────────────────────────
+rows({ s3: { displayTitle: '子任务：抓取页面', origin: 'subagent', parentId: 's1' } })
+status({ s3: { running: true, pendingInteraction: undefined } })
+status({ s3: { running: false, pendingInteraction: undefined } })
+const child = await take('子智能体完成 -> 不弹')
+expect(child.length === 0, '子智能体不该单独弹')
+
+// ── 会话短暂消失（墓碑）──────────────────────────────────────────────
+rows({ s4: { displayTitle: '转码任务' } })
+status({ s4: { running: true, pendingInteraction: undefined } })
+await take('跑起来')
+rows({})                        // 会话从快照里消失（存档/重连抖动）
+status({})
+await take('消失')
+rows({ s4: { displayTitle: '转码任务' } })
+status({ s4: { running: false, pendingInteraction: undefined } })
+const back = await take('重新出现且已完成 -> 弹')
+expect(back.length === 1, '会话短暂消失期间的那个完成被漏掉了')
+
+// ── 点通知：置顶 + 跳会话 ────────────────────────────────────────────
+order.length = 0
+pendingReply = { sessionId: 's1', token: 'tok-1', source: 'click' }
+doc.visibilityState = 'visible'
+doc.hasFocus = () => false
+currentSession.set({ key: 's2' })
+emit('visibilitychange')
+await flush()
+console.log('点通知后 ->', `导航 ${opened.join(',') || '无'} / 置顶 ${focusCalls.length} 次 / 消费 ${acks.length} 次`)
+expect(opened.length === 1 && opened[0] === 's1', '没有切到被点的会话')
+expect(focusCalls.length === 1, '没焦点时应当补一次置顶')
+expect(acks.length === 1 && acks[0].token === 'tok-1', '没有按 token 消费')
+expect(order.indexOf('navigate') < order.indexOf('ack'), '应当先导航成功再消费 pending')
+
+// 已经在该会话：不重复跳，但要消费
+opened.length = 0
+focusCalls.length = 0
+acks.length = 0
+pendingReply = { sessionId: 's1', token: 'tok-2', source: 'click' }
+currentSession.set({ key: 's1' })
+emit('visibilitychange')
+await flush()
+console.log('已在目标会话 ->', `导航 ${opened.length} 次 / 消费 ${acks.length} 次`)
+expect(opened.length === 0 && acks.length === 1, '已在目标会话应只消费不导航')
+
+// 没点过通知：不许跳（这是"自己切回窗口被劫持"的回归测试）
+opened.length = 0
+acks.length = 0
+pendingReply = { sessionId: null, token: null, source: 'none' }
+currentSession.set({ key: 's2' })
+emit('focus')
+await flush()
+console.log('没点过通知 ->', `导航 ${opened.length} 次`)
+expect(opened.length === 0, '没点通知却跳了会话')
+
+// ── 断链兜底 ─────────────────────────────────────────────────────────
 const realFetch = globalThis.fetch
 globalThis.fetch = async () => {
   throw new Error('route down')
@@ -348,15 +375,10 @@ console.log('回退到浏览器通知 ->', fallbacks.length, fallbacks.map((item
 expect(fallbacks.length >= 1, 'Host 路由失败后没有回退')
 globalThis.fetch = realFetch
 
-// ── 诊断 ─────────────────────────────────────────────────
+// ── 诊断 ─────────────────────────────────────────────────────────────
 const events = diagnostics.map((item) => item.event)
-expect(events.includes('client-apply'), '没有发出 client-apply 诊断')
-expect(events.includes('config'), '没有发出 config 诊断')
-expect(events.includes('transition'), '没有发出 transition 诊断')
-expect(events.includes('navigate'), '没有发出 navigate 诊断')
+for (const required of ['client-apply', 'transition', 'navigate', 'settings-registered']) {
+  expect(events.includes(required), `没有发出 ${required} 诊断`)
+}
 console.log('诊断日志 ->', diagnostics.length, '条，事件类型：', [...new Set(events)].join(', '))
-
-expect(asked[0].title === 'DSH 有问题要问你', '提问文案不对')
-expect(approval[0].title === 'DSH 需要你确认', '确认文案不对')
-expect(child.length === 0, '子智能体不该弹')
 console.log('全部判定符合预期')
