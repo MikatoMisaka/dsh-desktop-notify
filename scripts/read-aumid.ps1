@@ -39,9 +39,13 @@ if ([string]::IsNullOrWhiteSpace($id)) {
 }
 
 Write-Output ''
-Write-Output '把它填进 profile 的 cordis.patch.yml：'
+Write-Output '填进 profile 的 cordis.patch.yml 里那条 insert 下的 config.aumid：'
 Write-Output ''
-Write-Output '- id: desktop-notify'
-Write-Output '  name: dsh-desktop-notify'
-Write-Output '  config:'
-Write-Output "    aumid: $id"
+Write-Output '- insert:'
+Write-Output '    - id: desktop-notify'
+Write-Output '      name: dsh-desktop-notify'
+Write-Output '      config:'
+Write-Output "        aumid: $id"
+Write-Output ''
+Write-Output '（profile 里还没有这条 insert 的话，整段贴到 cordis.patch.yml 末尾即可；'
+Write-Output '  已有时候只改 aumid 那一行，别再加一条同 id 的顶层条目。）'

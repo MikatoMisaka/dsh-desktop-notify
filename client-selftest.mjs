@@ -10,6 +10,8 @@
  *
  * 用法：node client-selftest.mjs
  */
+import { readFileSync } from 'node:fs'
+
 let loaded
 
 globalThis.window = {
@@ -26,8 +28,13 @@ if (loaded === undefined) {
   console.error('客户端包没有通过 __ModuleLoader__.load 注册')
   process.exit(1)
 }
-if (loaded.id !== 'dsh-desktop-notify') {
-  console.error('模块 id 不对：', loaded.id)
+
+// DSH 用**包名**当 client 模块的 entry id；bundle 里注册的 id 必须与包名一致，
+// 否则 client-modules 会硬抛 "loaded without registering"。所以这里不写死字面量，
+// 而是跟 package.json 比——改名发布时漏改一处会当场红。
+const packageName = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')).name
+if (loaded.id !== packageName) {
+  console.error(`模块 id 与包名不一致：id=${loaded.id} name=${packageName}`)
   process.exit(1)
 }
 

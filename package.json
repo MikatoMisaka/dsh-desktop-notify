@@ -22,14 +22,18 @@
   "files": [
     "lib",
     "bin",
-    "scripts",
     "native",
     "skills",
+    "scripts/build-focus.ps1",
+    "scripts/install-protocol.ps1",
+    "scripts/read-aumid.ps1",
+    "scripts/focus-window.ps1",
     "selftest.mjs",
     "client-selftest.mjs",
     "cordis.patch.yml",
     "README.md"
   ],
+  "author": "MikatoMisaka",
   "keywords": [
     "dsh-plugin",
     "deepseek-harness",
