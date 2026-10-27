@@ -71,7 +71,23 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 ## 配置
 
-在 profile 的 `cordis.patch.yml` 里给这条 insert 加 `config` 即可：
+### 用户可见的开关：设置 → 通用 →「任务完成提醒」
+
+插件在 `settings.general.item` 插槽里注册了一行，三档按钮，选中即生效：
+
+| 值 | 什么时候弹 |
+| --- | --- |
+| `unfocused`（默认） | 只要 DSH 不在前台就弹；在前台但你停在别的会话上也弹 |
+| `minimized` | 只在窗口最小化 / 收进托盘 / 不可见时 |
+| `always` | 总是弹，包括你正盯着这条会话（自测用） |
+
+选择存在浏览器的 `localStorage`（`dsh-desktop-notify:trigger`）。**本机选过的值优先于 profile 里的默认值**——所以改 YAML 不会把用户在界面里的选择覆盖掉。
+
+UI 那一整段包在 `try/catch` 里，且用 `ctx.inject(['slots','locale'], …)` 延迟注入：设置页出问题也绝不会让提醒本身挂掉（这也是为什么它和通知逻辑不共享关键路径）。
+
+### profile 里的默认值（管理员/默认配置）
+
+没在界面里选过时，Host 的默认值就是这一档。在 `cordis.patch.yml` 里给 insert 加 `config` 即可：
 
 ```yaml
 - id: desktop-notify
@@ -80,16 +96,8 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
     aumid: com.deepseek.dsh   # Windows 通知的署名 AppUserModelID（默认值就是这个）
     sound: true               # false 则静音弹窗
     debug: true               # false 则不再写排障日志
-    trigger: unfocused        # unfocused（默认）| minimized | always
+    trigger: unfocused        # 只在用户没在设置里选过时生效
 ```
-
-`trigger` 的三档：
-
-| 值 | 什么时候弹 |
-| --- | --- |
-| `unfocused`（默认） | 只要 DSH 不在前台就弹；在前台但你停在别的会话上也弹 |
-| `minimized` | 只在窗口最小化 / 收进托盘 / 不可见时 |
-| `always` | 总是弹，包括你正盯着这条会话（自测用） |
 
 ### AUMID 是这套东西最容易踩的坑
 
@@ -183,8 +191,9 @@ node client-selftest.mjs  # 浏览器半边：什么情况下该弹、什么情�
 
 ## 路线（TODO）
 
-- [ ] **M1 真机验证**：前台 / 托盘 / 勿扰 / 多显示器 四种状态下到底弹不弹（目前只在 Node 里打过桩；AUMID 是否真的被 Windows 接受，只有真机能回答）
+- [x] **M1 真机验证**：通知能弹（AUMID 已核对为 `com.deepseek.dsh`）；点通知能恢复窗口、切会话、置顶
 - [ ] **M2 事件全覆盖**：失败与中断也提醒；同一轮「提问 → 回答 → 完成」合并成一条，别连弹
-- [ ] **M3 可配置**：开关、静音、只在后台弹、安静时段、AUMID、中英文案（跟随 DSH 语言）
-- [ ] **M4 排障**：`/plugins/dsh-desktop-notify/selftest` 路由（点一下就知道通道通不通）+ README 排障表
+- [x] **M3 可配置**：设置 → 通用的三档开关（localStorage 持久化，UI 失败不影响提醒）
+- [ ] **M4 排障**：`/plugins/dsh-desktop-notify/selftest` 路由（点一下就知道通道通不通）
 - [ ] **M5 分发**：`npm pack` 产物 + 安装说明，发到 DSH 插件仓库（Gitee / GitHub）
+- [ ] **M6 静音与时间窗**：`sound`、安静时段、按会话类型（定时任务 / 子智能体）分别开关

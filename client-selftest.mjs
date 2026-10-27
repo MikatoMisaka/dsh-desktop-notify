@@ -28,7 +28,18 @@ if (loaded.id !== 'dsh-desktop-notify') {
   process.exit(1)
 }
 
+/** 假 react：只够跑设置行组件（createElement + useState）。 */
+const fakeReact = {
+  createElement(type, props, ...children) {
+    return { type, props: { ...(props ?? {}), children } }
+  },
+  useState(initial) {
+    return [initial, () => {}]
+  },
+}
+
 const module = loaded.factory((name) => {
+  if (name === 'react') return fakeReact
   throw new Error(`不应 require(${name})`)
 })
 const { apply, inject } = module
@@ -112,7 +123,13 @@ const doc = {
   },
 }
 globalThis.document = doc
+const storage = new Map()
 globalThis.window = Object.assign(globalThis.window ?? {}, {
+  localStorage: {
+    getItem: (key) => (storage.has(key) ? storage.get(key) : null),
+    setItem: (key, value) => storage.set(key, String(value)),
+    removeItem: (key) => storage.delete(key),
+  },
   addEventListener(type, handler) {
     doc.addEventListener(type, handler)
   },
@@ -125,10 +142,37 @@ function emit(type) {
   for (const handler of [...(listeners.get(type) ?? [])]) handler()
 }
 
+/** 捕获设置槽位的注册，稍后手动渲染。 */
+let registered = null
+let localeRegistered = null
+
 const ctx = {
   effect(factory) {
     const dispose = factory()
     return typeof dispose === 'function' ? dispose : () => {}
+  },
+  inject(_deps, callback) {
+    callback({
+      effect(factory) {
+        const dispose = factory()
+        return typeof dispose === 'function' ? dispose : () => {}
+      },
+      locale: {
+        register(namespace, dictionaries) {
+          localeRegistered = { namespace, dictionaries }
+          return () => {}
+        },
+      },
+      slots: {
+        inject(_name, factory) {
+          return factory()
+        },
+        register(options, component) {
+          registered = { options, component }
+          return () => {}
+        },
+      },
+    })
   },
   uiSession: { sessionStatus, current: currentSession },
   sessions: { list: sessionList },
@@ -247,6 +291,36 @@ emit('focus')
 await flush()
 console.log('无 pending 时 focus ->', opened.length === 0 ? '没切（正确）' : opened.join(','))
 expect(opened.length === 0, '没有 pending 却切了会话')
+
+// ── 设置行 ───────────────────────────────────────────────
+expect(registered !== null, '没有注册设置项')
+expect(registered.options.name === 'settings.general.item', '设置槽位不对')
+expect(registered.options.id === 'desktop-notify', '设置项 id 不对')
+expect(registered.options.locale === 'desktop-notify', 'locale 命名空间不对')
+expect(localeRegistered !== null && localeRegistered.namespace === 'desktop-notify', '没有注册设置文案')
+expect(
+  typeof localeRegistered.dictionaries.zh.title === 'string' &&
+    typeof localeRegistered.dictionaries.en.title === 'string',
+  '中英文案缺失'
+)
+
+const tree = registered.component({ t: (key) => key })
+const buttons = tree.props.children[1].props.children.flat()
+expect(buttons.length === 3, '应该有三个档位')
+expect(buttons[0].props['data-active'] === 'true', '默认档位应该是 unfocused')
+buttons[2].props.onClick()
+await flush()
+expect(storage.get('dsh-desktop-notify:trigger') === 'always', '选择没有落盘')
+console.log('设置行 -> 三个档位，点击「总是提醒」已落盘')
+
+// 切到 always 后，正看着这个会话也应该弹
+doc.visibilityState = 'visible'
+doc.hasFocus = () => true
+rows({ s9: { title: '调试会话', retainedBy: { mainView: 1 } } })
+status({ s9: { running: true, pendingInteraction: undefined } })
+status({ s9: { running: false, pendingInteraction: undefined } })
+const alwaysDone = await take('always 档下正看着也弹')
+expect(alwaysDone.length === 1, 'always 档没生效')
 
 // ── 断链兜底 ──────────────────────────────────────────────
 const realFetch = globalThis.fetch
