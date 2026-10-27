@@ -4,6 +4,10 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 这个插件不注册任何界面：它只盯会话状态，安静地在本机弹通知。
 
+- 项目目录：`D:\Projects\own\dsh-notify`
+- 包名：`dsh-desktop-notify`（`node_modules` 里必须叫这个名字，DSH 按包名解析）
+- 形态：Host + 浏览器「双面包」，无构建步骤，直接发 ESM（与 `dsh-workbuddy-connect` 同款结构）
+
 ## 触发规则
 
 | 时机 | 通知标题 |
@@ -52,13 +56,20 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
     sound: true              # false 则静音弹窗
 ```
 
-## 安装 / 卸载
+## 安装方式
 
-安装（已经做过一次）：
+已安装的形态是**目录联接**，不是副本——改项目里的代码就是改已安装的插件，不用再同步第二份：
 
-1. 包目录放到 `<profile>/plugins/dsh-desktop-notify`；
-2. `<profile>/node_modules/dsh-desktop-notify` 建一个指向它的目录联接；
-3. `<profile>/cordis.patch.yml` 追加：
+```
+<profile>\node_modules\dsh-desktop-notify  →  D:\Projects\own\dsh-notify
+<profile>\cordis.patch.yml                 →  末尾一段 - insert: [{ id: desktop-notify, name: dsh-desktop-notify }]
+```
+
+新机器上装：
+
+1. `git clone <repo> D:\Projects\own\dsh-notify`
+2. 建联接：`New-Item -ItemType Junction -Path <profile>\node_modules\dsh-desktop-notify -Target D:\Projects\own\dsh-notify`
+3. `<profile>\cordis.patch.yml` 末尾追加：
 
 ```yaml
 - insert:
@@ -66,9 +77,18 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
       name: dsh-desktop-notify
 ```
 
-装完需要重启 DSH 桌面端（Host 插件和浏览器包都只在启动时装载）。
+4. 重启 DSH 桌面端（Host 插件和浏览器包都只在启动时装载）
 
-卸载：删掉 `cordis.patch.yml` 里那段 insert，重启即可；再删 `plugins/dsh-desktop-notify` 和 `node_modules/dsh-desktop-notify` 收尾。
+> profile 实际路径：`D:\HarnessData\dsh\profiles\desktop`（`C:\Users\<用户>\.dsh` 是指向它的联接）。
+
+卸载：删掉 insert 那段 → 重启 → 删联接（`cmd /c rmdir <profile>\node_modules\dsh-desktop-notify`，只删联接，不动源码）。
+
+## 开发流程
+
+1. 改 `lib/index.js` 或 `lib/client.js`
+2. `node selftest.mjs` / `node client-selftest.mjs` 先自检（不用起 DSH）
+3. 完全退出 DSH 桌面端（托盘右键退出，不是关窗口）→ 重开 → 真机验场景
+4. 提交
 
 ## 自检
 
@@ -78,3 +98,11 @@ node client-selftest.mjs  # 浏览器半边：什么情况下该弹、什么情�
 ```
 
 两个脚本都不需要启动 DSH。`selftest.mjs` 会真的弹一条通知（用来验证通知通道本身）。
+
+## 路线（TODO）
+
+- [ ] **M1 真机验证**：前台 / 托盘 / 勿扰 / 多显示器 四种状态下到底弹不弹（目前只在 Node 里打过桩；AUMID 是否真的被 Windows 接受，只有真机能回答）
+- [ ] **M2 事件全覆盖**：失败与中断也提醒；同一轮「提问 → 回答 → 完成」合并成一条，别连弹
+- [ ] **M3 可配置**：开关、静音、只在后台弹、安静时段、AUMID、中英文案（跟随 DSH 语言）
+- [ ] **M4 排障**：`/plugins/dsh-desktop-notify/selftest` 路由（点一下就知道通道通不通）+ README 排障表
+- [ ] **M5 分发**：`npm pack` 产物 + 安装说明，发到 DSH 插件仓库（Gitee / GitHub）
