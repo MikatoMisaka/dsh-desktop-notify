@@ -31,12 +31,21 @@ DSH 桌面端（Windows）的通知插件：**任务跑完了**、**DSH 停下�
 
 通知用 `activationType="protocol"` + `launch="dsh://open"`。DSH 安装器登记了 `dsh:` 协议（command 是 `"<exe>" "%1"`），单实例锁会把这次启动转成 `second-instance` → `focusPrimaryWindow()`，也就是 `restore()` + `show()` + `focus()`。
 
-窗口回到前台后，浏览器半边监听到 `visibilitychange`（hidden → visible），向 Host 的 `/pending` 取回「刚才那条通知属于哪个会话」，调 `ctx.uiWorkspace.openSession(sessionId)` 切过去，然后把 pending 清掉。
+**但这一步只让窗口"露出来"，不会把它带到最前面**：真正 show/focus 的是本来就在后台的旧进程，它没有前台权限（foreground right）——新进程拿到的那份权限随着它退出一起消失了。所以链路还有第二段：
 
-两个刻意的取舍：
+窗口恢复可见后，浏览器半边向 `/pending` 取回「刚才那条通知属于哪个会话」，再 POST `/focus` 让 Host 跑 `scripts/focus-window.ps1`：
+
+1. `ShowWindow(SW_RESTORE)` —— 最小化状态下 `SetForegroundWindow` 是无效的；
+2. `Interaction.AppActivate`（内部走 `AttachThreadInput`）；
+3. 不行就自己 `AttachThreadInput` 到当前前台线程，再 `BringWindowToTop` + `SetForegroundWindow`；
+4. 最后 `GetForegroundWindow()` 核对是否真的换成了 DSH 的窗口句柄，输出一行 JSON。
+
+置顶完成后再调 `ctx.uiWorkspace.openSession(sessionId)` 切到那个会话，然后清掉 pending。
+
+几个刻意的取舍：
 
 - pending 有 2 分钟保鲜期：点得太晚就只把窗口拉起来，不强行跳会话；
-- 已经在那个会话上就不重复切；
+- 已经在那个会话上就不重复切，但仍会置顶；
 - 只有 `visibilitychange` 会触发跳转，普通 alt-tab 回一个本来就可见的窗口不会跳（那样才不会莫名换会话）。
 
 ## 为什么有 Host 和浏览器两半
@@ -107,8 +116,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\read-aumid.ps1
 | `"kind":"notify-skipped","reason":"duplicate"` | 被 1.5 秒去重挡了 | 正常 |
 | `"kind":"client","event":"navigate"` | 窗口恢复后切到了对应会话 | — |
 | `"kind":"client","event":"navigate-skip"` | 已经在该会话，没重复切 | 正常 |
+| `"kind":"focus-requested"` | 已请求把窗口提到最前 | 没提到最前 → 手动跑 `scripts\focus-window.ps1` 看它输出的 JSON |
+| `"kind":"focus-spawn-error"` | 置顶脚本没起来 | 检查 `scripts\focus-window.ps1` 是否还在、PowerShell 是否被拦 |
 
-点通知不跳会话时按顺序看：`dsh:` 协议是否登记（`Get-ItemProperty HKCU:\Software\Classes\dsh`）→ 日志里有没有 `navigate` → pending 是否已过期（2 分钟）。
+点通知不跳会话时按顺序看：`dsh:` 协议是否登记（`Get-ItemProperty HKCU:\Software\Classes\dsh`）→ 日志里有没有 `navigate` → pending 是否已过期（2 分钟）。窗口不置顶时看有没有 `focus-requested`，并手动跑一次脚本核对 `foregroundAfter`。
+
+> 手动核对置顶：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts\focus-window.ps1`，输出 `{"ok":true,...}` 就说明前台句柄确实换成了 DSH 主窗口。
 
 快速验证通道（不启动 DSH、不碰会话）：
 
@@ -150,6 +163,12 @@ Invoke-WebRequest -Uri 'http://127.0.0.1:<端口>/plugins/dsh-desktop-notify/not
 2. `node selftest.mjs` / `node client-selftest.mjs` 先自检（不用起 DSH）
 3. 完全退出 DSH 桌面端（托盘右键退出，不是关窗口）→ 重开 → 真机验场景
 4. 提交
+
+> `.ps1` 一律存成 **UTF-8 with BOM**。Windows PowerShell 5.1 没有 BOM 时按 ANSI 读文件，中文注释会被读成乱码，运气不好直接变成语法错误（"Unexpected token '}'"），而且报错位置会飘到文件后半段，非常难查。改完可以这样静态检查：
+>
+> ```powershell
+> powershell -NoProfile -Command "$e=$null; [void][System.Management.Automation.Language.Parser]::ParseFile('scripts\focus-window.ps1',[ref]$null,[ref]$e); $e.Count"
+> ```
 
 ## 自检
 

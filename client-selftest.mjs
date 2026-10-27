@@ -60,6 +60,7 @@ let posted = []
 const diagnostics = []
 const fallbacks = []
 const opened = []
+const focusCalls = []
 
 /** 供 /pending 用的待跳转会话（取一次就没了，模拟 Host 的清理语义）。 */
 let pendingSession = null
@@ -80,6 +81,10 @@ globalThis.fetch = async (url, init) => {
     const value = pendingSession
     pendingSession = null
     return { ok: true, status: 200, json: async () => ({ sessionId: value, ageMs: value === null ? null : 1200 }) }
+  }
+  if (target.endsWith('/focus')) {
+    focusCalls.push(JSON.parse(init?.body ?? '{}'))
+    return { ok: true, status: 200 }
   }
   if (target.endsWith('/log')) {
     diagnostics.push(JSON.parse(init.body))
@@ -214,6 +219,8 @@ emit('visibilitychange')
 await flush()
 console.log('窗口恢复后切到 ->', opened.length === 0 ? '（没有触发）' : opened.join(','))
 expect(opened.length === 1 && opened[0] === 's1', '窗口恢复后没有切到 s1')
+console.log('置顶请求 ->', focusCalls.length, '次')
+expect(focusCalls.length >= 1, '窗口恢复后没有请求置顶')
 
 // 7. 已经在那个会话上，就不要重复切
 opened.length = 0

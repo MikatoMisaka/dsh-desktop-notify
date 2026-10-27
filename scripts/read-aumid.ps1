@@ -1,4 +1,4 @@
-# 读出开始菜单快捷方式登记的 AppUserModelID —— 也就是 Windows 通知的署名。
+﻿# 读出开始菜单快捷方式登记的 AppUserModelID —— 也就是 Windows 通知的署名。
 #
 # Windows 的通知绑定到这个 ID：字符串写错时 CreateToastNotifier 不报错，
 # 只是把 toast 静默丢弃。所以换品牌/换构筑后先跑这个脚本核对。
