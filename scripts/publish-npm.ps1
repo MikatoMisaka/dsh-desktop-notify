@@ -13,12 +13,14 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\publish-npm.ps1 -Name dsh-notify-focus
 #   -DryRun   只预览（npm publish --dry-run），不真发
 #   -SkipLive 跳过会真弹通知的 host 自检（默认会跑）
+#   -Otp      账号开了 2FA 时，传入 6 位动态码（30 秒内有效，所以是运行时才要）
 
 param(
   [Parameter(Mandatory = $true)][string]$Name,
   [string]$Version = '',
   [switch]$DryRun,
-  [switch]$SkipLive
+  [switch]$SkipLive,
+  [string]$Otp = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -151,13 +153,12 @@ try {
 
   # 10) 发布
   Write-Step ($(if ($DryRun) { 'DryRun 预览' } else { '发布' }))
+  $publishArgs = @('publish', '--access', 'public')
+  if ($DryRun) { $publishArgs += '--dry-run' }
+  if ($Otp -ne '') { $publishArgs += @('--otp', $Otp) }
   Push-Location $stage
   try {
-    if ($DryRun) {
-      & npm publish --access public --dry-run
-    } else {
-      & npm publish --access public
-    }
+    & npm @publishArgs
     $publishExit = $LASTEXITCODE
   } finally {
     Pop-Location
