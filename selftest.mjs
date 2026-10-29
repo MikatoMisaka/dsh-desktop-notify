@@ -6,7 +6,7 @@
  *   node selftest.mjs          默认 dry-run：走完整流程但不弹窗（自动化/CI 用这个）
  *   node selftest.mjs --live   真的发通知，用来验证通道本身
  */
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { apply } from './lib/index.js'
@@ -17,13 +17,18 @@ const live = process.argv.includes('--live') || process.env.DSH_NOTIFY_LIVE === 
 /** 独立数据目录：不读真实运行态的日志/click.json，也不往里写。 */
 const dataDir = mkdtempSync(join(tmpdir(), 'dsh-notify-selftest-'))
 
-/** 收集 apply 期间注册的路由。 */
+/** 收集 apply 期间注册的路由，以及订阅的事件处理器（用于模拟一轮结束）。 */
 const routes = []
+const eventHandlers = new Map()
 
 const ctx = {
   effect(factory) {
     const dispose = factory()
     return typeof dispose === 'function' ? dispose : () => {}
+  },
+  on(name, handler) {
+    eventHandlers.set(name, handler)
+    return () => eventHandlers.delete(name)
   },
   webServer: {
     register(spec) {
@@ -145,6 +150,46 @@ expect(empty.status === 400, '两个字段都空必须 400（否则会弹一条�
 const dup = await call(route, post({ title: 'DSH 通知自检', body: '重复键应当被去重', key: 'selftest' }))
 console.log('POST 同 key 立即重发 ->', dup.status, dup.body)
 expect(JSON.parse(dup.body).skipped === 'duplicate', '同 key 1.5s 内应当去重')
+
+// ── 回复预览：模拟一轮结束 → 完成通知的正文应当带上预览 ─────────────────
+const agentStatus = eventHandlers.get('agent/status')
+expect(typeof agentStatus === 'function', '没有订阅 agent/status，预览拿不到回复')
+agentStatus({
+  status: 'idle',
+  agent: {
+    id: 'session-preview',
+    session: {
+      header: { id: 'session-preview' },
+      deriveMessages: () => [
+        { role: 'user', content: [{ type: 'text', text: '帮我看看这个方案' }] },
+        { role: 'assistant', content: [{ type: 'text', text: '方案整体可行，但第二步的权限校验要补上。' }] },
+      ],
+    },
+  },
+})
+
+const previewNotify = await call(
+  route,
+  post({ kind: 'complete', label: '方案评审', preview: true, sessionId: 'session-preview', key: 'preview-probe' })
+)
+console.log('POST 完成通知（带预览）->', previewNotify.status, previewNotify.body)
+expect(previewNotify.status === 200, '完成通知应当 200')
+
+const logText = readFileSync(join(dataDir, 'host.log'), 'utf8')
+const dryLines = logText.split('\n').filter((line) => line.includes('notify-dry-run'))
+expect(dryLines.length >= 1, 'dry-run 应当记下通知内容')
+const lastDry = JSON.parse(dryLines[dryLines.length - 1])
+console.log('预览正文 ->', lastDry.body)
+expect(lastDry.body.includes('方案整体可行'), '通知正文没有带上回复预览')
+expect(lastDry.body.includes('方案评审'), '通知正文丢了会话名')
+
+// 没有预览时退回固定文案
+const fallbackNotify = await call(route, post({ kind: 'complete', label: '另一个会话', preview: true, sessionId: 'session-unknown', key: 'preview-fallback' }))
+expect(fallbackNotify.status === 200, '无预览时也应当发出')
+const dryLines2 = readFileSync(join(dataDir, 'host.log'), 'utf8').split('\n').filter((line) => line.includes('notify-dry-run'))
+const lastDry2 = JSON.parse(dryLines2[dryLines2.length - 1])
+console.log('无预览时正文 ->', lastDry2.body)
+expect(lastDry2.body.includes('这一轮已经跑完'), '无预览时应当退回固定文案')
 
 // ── pending：一条通知一个 token ───────────────────────────────────────
 const withSession = await call(route, post({ title: '带会话的通知', body: '用来验证点通知跳会话', key: 'pending-probe', sessionId: 'session-abc' }))

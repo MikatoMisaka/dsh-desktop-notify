@@ -298,6 +298,8 @@ status({ s1: { running: true, pendingInteraction: undefined } })
 status({ s1: { running: false, pendingInteraction: undefined } })
 const done = await take('最小化后完成 -> 弹')
 expect(done.length === 1 && done[0].sessionId === 's1', '完成通知没带 sessionId')
+// 完成通知的正文由 Host 用回复预览拼，所以这里必须带 kind/label/preview 三个字段
+expect(done[0].kind === 'complete' && done[0].preview === true && done[0].label === '整理本周会议纪要', '完成通知缺 kind/label/preview')
 
 // ── 待回答交互的差分 ─────────────────────────────────────────────────
 status({ s1: { running: true, pendingInteraction: { kind: 'question', callId: 'call-1' } } })
