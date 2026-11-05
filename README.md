@@ -120,6 +120,21 @@ macOS 的实现与限制见 [docs/macos-adaptation.md](./docs/macos-adaptation.m
 
 **卸载**：删掉那段 insert → `npm run protocol:uninstall`（仅 Windows 需要）→ `cmd /c rmdir <profile>\node_modules\<包名>`（macOS 用 `rm <profile>/node_modules/<包名>`）→ 重启 DSH。
 
+## 代码结构
+
+```
+lib/
+├── index.js               Host 主干：路由 / 限流 / 去重 / 回复预览 / 诊断日志（无平台分支）
+├── client.js              浏览器半边：判该不该提醒；非 Windows 时自己弹系统通知
+└── platform/
+    ├── index.js           适配器选择器 + PlatformHost 契约
+    ├── windows.js         WinRT toast / AUMID 核对 / 协议 / 置顶程序 / click.json
+    └── delegated.js       非 Windows：Host 不弹，正文回给渲染进程
+```
+
+想知道「某个平台上做了什么」，只需要看 `lib/platform/` 下对应的那一个文件。详细对照见
+[docs/macos-adaptation.md](./docs/macos-adaptation.md)。
+
 ## 配置
 
 ### 界面

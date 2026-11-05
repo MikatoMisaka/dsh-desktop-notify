@@ -36,25 +36,44 @@ macOS 上这条限制不存在：
 
 ## 改了什么
 
-设计原则：**Host 保留它真正跨平台的那部分能力**——拼正文（回复预览）、限流、同 key 去重、
-诊断日志——把「怎么弹」按平台分流。
+设计原则：**主干只放跨平台逻辑，平台差异各占一个文件。** Host 保留它真正跨平台的那部分能力
+——拼正文（回复预览）、限流、同 key 去重、诊断日志——把「怎么弹、点了怎么回跳」交给适配器：
 
-### `lib/index.js`（Host 半边）
+```
+lib/
+├── index.js              主干：路由、限流、去重、预览、日志、来源校验（不含任何平台分支）
+├── client.js             浏览器半边：判该不该提醒；非 Windows 时 showLocal() 自己弹
+└── platform/
+    ├── index.js          选择器 + 数据目录 + 平台名归一化 + PlatformHost 契约
+    ├── windows.js        WinRT toast / AUMID 核对 / dsh-notify: 协议 / 置顶程序 / click.json
+    └── delegated.js      非 Windows：不弹，正文回给渲染进程（macOS、Linux 都走这里）
+```
 
-新增 `platform`（`win32` / `darwin` / `linux`），只做分叉，不复制业务逻辑：
+适配器契约（`lib/platform/index.js` 里也有注释）：
 
-| 位置 | Windows | 非 Windows |
+| 成员 | Windows | 非 Windows |
 | --- | --- | --- |
-| AUMID 登记探测 | 启动时 `Get-StartApps` 核一次 | 跳过，`aumidState` 记为 `unsupported` |
-| `dsh-notify:` 协议 | 写 HKCU 指向 exe | 不写 |
-| `show()` | spawn PowerShell 弹 toast | 不会被调用 |
-| `/notify` | 弹 toast，回 `{ok:true}` | **委派**：回 `{ok:true, delegate:'darwin', title, body, sessionId}` |
-| `/focus` | 拉 exe 置顶 | 回 `{ok:false, delegate:'darwin'}` |
-| `/config` | 原有字段 | 多带 `platform` 与 `capabilities:{toast,delegate,protocol}` |
-| 数据目录 | `%LOCALAPPDATA%\dsh-desktop-notify` | `~/Library/Logs/dsh-desktop-notify` |
+| `id` | `win32` | `darwin` / `linux` |
+| `delegate` | `null`（自己弹） | 平台名（让 `/notify` 回正文） |
+| `capabilities` | `{toast:true, delegate:false, protocol:<是否登记成功>}` | `{toast:false, delegate:true, protocol:false}` |
+| `start()` | 探一次 AUMID + 登记协议 | 只记一条「协议不适用」 |
+| `show()` | spawn PowerShell 弹 WinRT toast | 不会被调用（`/notify` 提前委派） |
+| `focus()` | 拉 `focus-window.exe` 置顶 | `false` |
+| `consumeClick()` | 读 exe 写的 `click.json` | `null` |
+| `describe()` | aumid / aumidState / protocol | `aumid:null`、`aumidState:'unsupported'` |
 
-`/notify` 的委派分支放在**限流与去重之后**，所以两边的通知频次语义完全一致；正文也仍然是
-Host 拼的，`kind: 'complete'` 依旧带回复预览。
+主干里因此没有一处 `process.platform` 判断：它只知道「这个适配器会不会自己弹、要不要 token」。
+
+### `lib/index.js`（Host 主干）
+
+- 新增 `runtime = createPlatformHost(config)`，所有平台相关调用都走它。
+- `/notify` 在**限流与去重之后**分流：`runtime.delegate` 非 null 就回
+  `{ok:true, delegate:'darwin', title, body, sessionId}`，正文照样由 Host 拼。
+- `/focus`：委派模式下回 `{ok:false, delegate}`。
+- `/config`：多带 `platform` 与 `capabilities:{toast,delegate,protocol}`。
+- `/pending`：点击回执从适配器取（Windows 读 `click.json`，其它平台永远是 `null`）。
+- 数据目录由适配器决定：Windows `%LOCALAPPDATA%\dsh-desktop-notify`，
+  非 Windows `~/Library/Logs/dsh-desktop-notify`。
 
 ### `lib/client.js`（浏览器半边）
 

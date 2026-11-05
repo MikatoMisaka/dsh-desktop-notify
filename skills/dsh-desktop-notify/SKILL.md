@@ -33,7 +33,7 @@ Copy-Item <源码>\skills\dsh-desktop-notify "$env:USERPROFILE\.agents\skills\ds
 
 ## 它靠什么工作
 
-- **Host 半边**（`lib/index.js`）：注册 `/plugins/dsh-desktop-notify/*` 路由，维护「这一轮回复的预览」、限流、去重与诊断日志。Windows 上它自己用 PowerShell 调 WinRT 发 toast；macOS 上它把拼好的正文回给浏览器半边（响应里带 `delegate`），由渲染进程弹通知。
+- **Host 主干**（`lib/index.js`）：注册 `/plugins/dsh-desktop-notify/*` 路由，维护「这一轮回复的预览」、限流、去重与诊断日志。**平台相关的东西一律在 `lib/platform/`**：`windows.js`（WinRT toast + AUMID 核对 + 协议 + 置顶程序）、`delegated.js`（非 Windows，只把正文回给渲染进程）。主干里没有 `process.platform` 判断，排障先看 `/config` 的 `platform` 与 `capabilities`。
 - **浏览器半边**（`lib/client.js`）：判断该不该提醒；Windows 走 Host 弹 toast 并靠协议回传 token，macOS 直接用系统通知 API 弹、点击当场跳会话；两种情况下都会调 `ctx.uiWorkspace.openSession` 切会话。
 - **原生小工具**（`bin\focus-window.exe`，**仅 Windows**）：点通知时被协议拉起，负责 restore + 置顶。它由 `native\FocusWindow.cs` 编译而来，**不在仓库里**，Windows 装完必须编译一次；macOS 不需要任何原生程序。
 
