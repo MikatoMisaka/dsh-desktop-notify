@@ -1,24 +1,35 @@
 ---
-description: "DSH 桌面端（Windows）通知插件：任务完成或等待回答时弹系统通知，点通知直接回到对应会话。"
+description: "DSH 桌面端（Windows / macOS）通知插件：任务完成或等待回答时弹系统通知，点通知直接回到对应会话。"
 kind: "package-reference"
 ---
 
 # dsh-desktop-notify
 
-DeepSeek Harness 桌面端（Windows）的通知插件。
+DeepSeek Harness 桌面端（Windows / macOS）的通知插件。
 
 ## 作用
 
-- **任务完成提醒**：一轮任务结束时弹 Windows 通知，**正文预览这轮回复的最后一段**，留在操作中心。
+- **任务完成提醒**：一轮任务结束时弹系统通知，**正文预览这轮回复的最后一段**，留在通知中心。
 - **等待你回答时提醒**：提问、计划审阅、工具调用确认各有文案（工具确认带工具名）。
 - **点通知直达会话**：把 DSH 拉到前台，并切到**那条通知**对应的会话。
-- **收进托盘也能找回**：DSH 关窗口即隐藏到托盘，插件按 PID 枚举隐藏窗口，照样恢复并置顶。
+- **收进托盘也能找回**：DSH 关窗口即隐藏到托盘，照样能恢复并置顶（Windows 上靠预编译的置顶程序）。
 - **不误打扰**：你看这条会话时不提醒；子智能体不单独提醒；1.5 秒同键去重、10 秒最多 6 条。
 - **可配**：三档触发时机，设置页里点选即生效。
 
 ## 安装
 
-需要 Windows 10/11 + DSH 桌面端。下文 `<profile>` 指 profile 目录（看 `$env:DSH_HOME` 与 `$env:DSH_PROFILE`，不一定在默认位置），`<包名>` 指实际安装名（npm 上是 `dsh-notify-focus`）。
+需要 DSH 桌面端（Windows 10/11 或 macOS）。下文 `<profile>` 指 profile 目录（看 `$env:DSH_HOME` 与 `$env:DSH_PROFILE`，不一定在默认位置），`<包名>` 指实际安装名（npm 上是 `dsh-notify-focus`）。
+
+两个平台只在「怎么弹通知」上不同：
+
+| | Windows | macOS |
+| --- | --- | --- |
+| 原生程序 | 需要编译 `bin\focus-window.exe` | 不需要 |
+| 协议登记 | 需要 `dsh-notify:`（HKCU） | 不需要 |
+| 通知署名 | AUMID，写错会静默丢 toast | 由 App 的 bundle id 决定，无需配置 |
+| 首次授权 | 无 | 系统会问一次「允许通知」 |
+
+macOS 的实现与限制见 [docs/macos-adaptation.md](./docs/macos-adaptation.md)。
 
 ### 从 npm
 
@@ -45,7 +56,7 @@ DeepSeek Harness 桌面端（Windows）的通知插件。
 
 4. 完全退出 DSH 桌面端（托盘右键退出，不是关窗口）再打开。
 
-### 从源码
+### 从源码（Windows）
 
 1. 取源码到固定目录：
 
@@ -76,7 +87,38 @@ DeepSeek Harness 桌面端（Windows）的通知插件。
 
 5. 完全退出 DSH 桌面端再打开。
 
-**卸载**：删掉那段 insert → `npm run protocol:uninstall` → `cmd /c rmdir <profile>\node_modules\<包名>` → 重启 DSH。
+### 从源码（macOS）
+
+1. 取源码到固定目录：
+
+   ```bash
+   git clone https://github.com/MikatoMisaka/dsh-desktop-notify ~/Projects/dsh-notify
+   ```
+
+2. 收尾（macOS 不编译任何东西，只打印提示与权限说明）：
+
+   ```bash
+   cd ~/Projects/dsh-notify
+   npm run setup
+   ```
+
+3. 链进 profile（父目录 `node_modules` 必须已存在）：
+
+   ```bash
+   ln -s ~/Projects/dsh-notify <profile>/node_modules/dsh-desktop-notify
+   ```
+
+4. `<profile>/cordis.patch.yml` 末尾追加：
+
+   ```yaml
+   - insert:
+       - id: desktop-notify
+         name: dsh-desktop-notify
+   ```
+
+5. 彻底退出 DSH（⌘Q）再打开；首次弹通知时允许「系统设置 → 通知 → DeepSeek Harness」。
+
+**卸载**：删掉那段 insert → `npm run protocol:uninstall`（仅 Windows 需要）→ `cmd /c rmdir <profile>\node_modules\<包名>`（macOS 用 `rm <profile>/node_modules/<包名>`）→ 重启 DSH。
 
 ## 配置
 
@@ -96,11 +138,11 @@ DeepSeek Harness 桌面端（Windows）的通知插件。
 
 | 键 | 默认值 | 含义 |
 | --- | --- | --- |
-| `aumid` | `com.deepseek.dsh` | 通知署名的 AppUserModelID；启动时会用 `Get-StartApps` 核一次登记状态。 |
-| `fallbackAumid` | PowerShell 自己的 ID | 主署名的备用身份；显式给空串表示关闭兜底。 |
-| `sound` | `true` | 是否带提示音。 |
+| `aumid` | `com.deepseek.dsh` | 仅 Windows：通知署名的 AppUserModelID；启动时会用 `Get-StartApps` 核一次登记状态。 |
+| `fallbackAumid` | PowerShell 自己的 ID | 仅 Windows：主署名的备用身份；显式给空串表示关闭兜底。 |
+| `sound` | `true` | 是否带提示音（仅 Windows 生效）。 |
 | `trigger` | `unfocused` | `unfocused` / `minimized` / `always`；仅当用户没在设置里选过时生效。 |
-| `protocol` | `true` | 是否登记 `dsh-notify:` 协议（点通知的快路径）。 |
-| `debug` | `true` | 是否写日志 `%LOCALAPPDATA%\dsh-desktop-notify\host.log`。 |
+| `protocol` | `true` | 仅 Windows：是否登记 `dsh-notify:` 协议（点通知的快路径）。 |
+| `debug` | `true` | 是否写日志：Windows `%LOCALAPPDATA%\dsh-desktop-notify\host.log`，macOS `~/Library/Logs/dsh-desktop-notify/host.log`。 |
 
 `aumid` 写错**不会报错**，只会让 toast 被静默丢掉；启动日志里看到 `aumid-unregistered` 就说明配置的 ID 没登记，跑 `scripts\read-aumid.ps1` 取真实值。

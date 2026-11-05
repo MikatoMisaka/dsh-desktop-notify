@@ -1,8 +1,8 @@
 {
   "name": "dsh-desktop-notify",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
-  "description": "DSH 桌面通知：任务完成、需要你选择/确认时弹出 Windows 通知（操作中心可见），点通知直接回到对应会话",
+  "description": "DSH 桌面通知：任务完成、需要你选择/确认时弹系统通知（通知中心可见），点通知直接回到对应会话（Windows / macOS）",
   "type": "module",
   "main": "./lib/index.js",
   "exports": {
@@ -15,8 +15,10 @@
     "build:focus": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-focus.ps1",
     "protocol:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-protocol.ps1",
     "protocol:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-protocol.ps1 -Uninstall",
-    "setup": "npm run build:focus && npm run protocol:install",
+    "setup": "node scripts/setup.mjs",
     "test": "node client-selftest.mjs",
+    "test:host": "node selftest.mjs",
+    "test:macos": "node macos-selftest.mjs",
     "test:live": "node client-selftest.mjs && node selftest.mjs --live"
   },
   "files": [
@@ -24,11 +26,14 @@
     "bin",
     "native",
     "skills",
+    "docs",
     "scripts/build-focus.ps1",
     "scripts/install-protocol.ps1",
     "scripts/read-aumid.ps1",
     "scripts/focus-window.ps1",
+    "scripts/setup.mjs",
     "selftest.mjs",
+    "macos-selftest.mjs",
     "client-selftest.mjs",
     "cordis.patch.yml",
     "README.md"
@@ -38,7 +43,8 @@
     "dsh-plugin",
     "deepseek-harness",
     "notification",
-    "windows-toast"
+    "windows-toast",
+    "macos-notification"
   ],
   "license": "MIT",
   "dsh": {
