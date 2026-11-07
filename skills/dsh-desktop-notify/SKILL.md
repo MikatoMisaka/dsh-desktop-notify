@@ -83,6 +83,7 @@ Copy-Item <源码>\skills\dsh-desktop-notify "$env:USERPROFILE\.agents\skills\ds
 - `{"kind":"protocol","platform":"win32","registered":true}` + `{"kind":"host-ready","pid":<DSH 的 pid>,"platform":"win32"}`：Host 半边起来了。
 - macOS 上 `protocol` 那条会是 `registered:false`（本来就不登记协议），属正常；`host-ready` 里 `platform` 应为 `darwin`。
 - `{"kind":"client","event":"client-apply"}`：浏览器半边进图了。
+- `{"kind":"notify-suppressed-by-system","quns":5}`：通知发出去了，但系统正在勿扰/静默时段，只进通知中心不弹横幅。让用户关掉勿扰（`Win+A` → 勿扰），`Win+N` 能看到刚才那条。
 - `{"kind":"aumid-checked","state":"primary"}`：通知署名核对通过；`aumid-unregistered` 说明配置的 AUMID 没登记，已改用备用身份。
 
 > 自检脚本（`selftest.mjs`）也写同一个日志文件，会留下 `registered:false` 的记录。**核对时认最后一条 `host-ready` 的 pid**，别被自检的 `registered:false` 误导。

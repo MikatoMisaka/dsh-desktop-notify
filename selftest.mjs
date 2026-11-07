@@ -197,19 +197,8 @@ const lastDry2 = JSON.parse(dryLines2[dryLines2.length - 1])
 console.log('无预览时行 ->', JSON.stringify(lastDry2.lines))
 expect(lastDry2.lines[0] === '另一个会话' && lastDry2.lines[1] === '这一轮已经跑完。', '无预览时应当退回固定文案（仍分两行）')
 
-// ── pending 通知：会话名与细节也分两行 ─────────────────────────────────
-const pendingNotify = await call(
-  route,
-  post({ kind: 'pending', label: '整理本周会议纪要', detail: '工具：shell', sessionId: 'session-pending', key: 'pending-lines' })
-)
-expect(pendingNotify.status === 200, 'pending 通知应当 200')
-const dryLines3 = readFileSync(join(dataDir, 'host.log'), 'utf8').split('\n').filter((line) => line.includes('notify-dry-run'))
-const lastDry3 = JSON.parse(dryLines3[dryLines3.length - 1])
-console.log('pending 行 ->', JSON.stringify(lastDry3.lines))
-expect(
-  lastDry3.lines[0] === '整理本周会议纪要' && lastDry3.lines[1] === '工具：shell',
-  'pending 通知也该是"会话名 / 细节"两行'
-)
+// pending 通知的两行结构放到最后验证：这里插一条会吃掉"10 秒 6 条"的配额，
+// 让紧随其后的带 sessionId 通知被限流跳过（本文件末尾有那条用例）。
 
 // ── pending：一条通知一个 token ───────────────────────────────────────
 const withSession = await call(route, post({ title: '带会话的通知', body: '用来验证点通知跳会话', key: 'pending-probe', sessionId: 'session-abc' }))
@@ -229,6 +218,22 @@ expect(JSON.parse(afterClear.body).sessionId === null, '清空后不应再返回
 // ── 配置路由 ─────────────────────────────────────────────────────────
 const config = await call(configRoute, makeRequest({ method: 'GET', headers: { host: HOST } }))
 console.log('GET /config ->', config.status, config.body)
+
+// ── pending 通知：会话名与细节也分两行（放最后，避免占用前面用例的限流配额）──
+// 限流是 10 秒 6 条，前面已经用掉几条，先等窗口滑过去。
+await new Promise((resolve) => setTimeout(resolve, 10_000))
+const pendingNotify = await call(
+  route,
+  post({ kind: 'pending', label: '整理本周会议纪要', detail: '工具：shell', sessionId: 'session-pending', key: 'pending-lines' })
+)
+expect(pendingNotify.status === 200, 'pending 通知应当 200')
+const dryLines3 = readFileSync(join(dataDir, 'host.log'), 'utf8').split('\n').filter((line) => line.includes('notify-dry-run'))
+const lastDry3 = JSON.parse(dryLines3[dryLines3.length - 1])
+console.log('pending 行 ->', JSON.stringify(lastDry3.lines))
+expect(
+  lastDry3.lines[0] === '整理本周会议纪要' && lastDry3.lines[1] === '工具：shell',
+  'pending 通知也该是"会话名 / 细节"两行'
+)
 
 // 真发模式下给 PowerShell 子进程留出弹 toast 的时间。
 if (live) await new Promise((resolve) => setTimeout(resolve, 2500))
