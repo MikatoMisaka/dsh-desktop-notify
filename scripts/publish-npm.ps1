@@ -76,7 +76,11 @@ foreach ($item in $items) {
     $skipped += $item
     continue
   }
-  Copy-Item $src (Join-Path $stage $item) -Recurse -Force
+  $dest = Join-Path $stage $item
+  # files 里可能有 scripts/xxx.ps1 这种单文件条目，父目录要自己建
+  $parent = Split-Path $dest -Parent
+  if (-not (Test-Path $parent)) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+  Copy-Item $src $dest -Recurse -Force
 }
 if ($skipped.Count -gt 0) { Write-Output ("    跳过（不存在）：" + ($skipped -join ', ')) }
 
