@@ -1,6 +1,6 @@
 {
   "name": "dsh-desktop-notify",
-  "version": "0.7.0",
+  "version": "0.7.2",
   "private": true,
   "description": "DSH 桌面通知：任务完成、需要你选择/确认时弹系统通知（通知中心可见），点通知直接回到对应会话（Windows / macOS）",
   "type": "module",

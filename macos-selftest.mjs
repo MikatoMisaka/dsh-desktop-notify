@@ -142,18 +142,22 @@ expect(payload.ok === true, '应当回 ok')
 expect(payload.delegate === 'darwin', '必须告诉浏览器半边"这条你来弹"')
 expect(typeof payload.body === 'string' && payload.body.includes('方案可行'), '委派正文没有带上回复预览')
 expect(payload.body.includes('方案评审'), '委派正文丢了会话名')
+// 行数组是给系统通知用的：会话名一行、预览一行，客户端用换行拼回去
+expect(Array.isArray(payload.lines) && payload.lines.length === 2, '委派应当给出两行（会话名 / 预览）')
+expect(payload.lines[0] === '方案评审', '委派第一行应当是会话名')
+expect(payload.body === payload.lines.join('\n'), 'body 应当等于 lines 用换行拼接')
 expect(typeof payload.title === 'string' && payload.title !== '', '委派时必须给出标题')
 expect(payload.sessionId === 'session-mac', '委派时要回带 sessionId，点击才能跳会话')
 
-// ── 提问类通知：正文由浏览器半边拼好，Host 原样回传 ─────────────────────
+// ── 提问类通知：会话名与细节也分两行 ───────────────────────────────────
 const pendingNotify = await call(
   notifyRoute,
-  post({ title: 'DSH 有问题要问你', body: '方案评审：会话停下来等你回答。', key: 'mac-pending', sessionId: 'session-mac' })
+  post({ kind: 'pending', label: '方案评审', detail: '会话停下来等你回答。', key: 'mac-pending', sessionId: 'session-mac' })
 )
 const pendingPayload = JSON.parse(pendingNotify.body)
 console.log('POST 提问通知 ->', pendingNotify.status, pendingNotify.body)
 expect(pendingNotify.status === 200 && pendingPayload.delegate === 'darwin', '提问通知同样要委派')
-expect(pendingPayload.body === '方案评审：会话停下来等你回答。', '非 complete 通知的正文应当原样回传')
+expect(pendingPayload.body === '方案评审\n会话停下来等你回答。', '提问通知也该是"会话名 / 细节"两行')
 
 // ── 去重依旧生效 ──────────────────────────────────────────────────────
 const dup = await call(

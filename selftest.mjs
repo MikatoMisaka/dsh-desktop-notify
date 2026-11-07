@@ -162,7 +162,10 @@ agentStatus({
       header: { id: 'session-preview' },
       deriveMessages: () => [
         { role: 'user', content: [{ type: 'text', text: '帮我看看这个方案' }] },
-        { role: 'assistant', content: [{ type: 'text', text: '方案整体可行，但第二步的权限校验要补上。' }] },
+        {
+          role: 'assistant',
+          content: [{ type: 'text', text: '## 结论\n**方案整体可行**，但 `权限校验` 要补上。' }],
+        },
       ],
     },
   },
@@ -179,17 +182,34 @@ const logText = readFileSync(join(dataDir, 'host.log'), 'utf8')
 const dryLines = logText.split('\n').filter((line) => line.includes('notify-dry-run'))
 expect(dryLines.length >= 1, 'dry-run 应当记下通知内容')
 const lastDry = JSON.parse(dryLines[dryLines.length - 1])
-console.log('预览正文 ->', lastDry.body)
-expect(lastDry.body.includes('方案整体可行'), '通知正文没有带上回复预览')
-expect(lastDry.body.includes('方案评审'), '通知正文丢了会话名')
+console.log('预览行 ->', JSON.stringify(lastDry.lines))
+expect(Array.isArray(lastDry.lines) && lastDry.lines.length === 2, '预览应当拆成两行（会话名 / 预览）')
+expect(lastDry.lines[0] === '方案评审', '第一行应当是会话名')
+expect(lastDry.lines[1].includes('方案整体可行'), '第二行应当带上回复预览')
+// Markdown 记号要清掉：## / ** / 反引号都不该出现在通知正文里
+expect(!/[#*`]/.test(lastDry.lines[1]), '第二行残留了 Markdown 记号：' + lastDry.lines[1])
 
 // 没有预览时退回固定文案
 const fallbackNotify = await call(route, post({ kind: 'complete', label: '另一个会话', preview: true, sessionId: 'session-unknown', key: 'preview-fallback' }))
 expect(fallbackNotify.status === 200, '无预览时也应当发出')
 const dryLines2 = readFileSync(join(dataDir, 'host.log'), 'utf8').split('\n').filter((line) => line.includes('notify-dry-run'))
 const lastDry2 = JSON.parse(dryLines2[dryLines2.length - 1])
-console.log('无预览时正文 ->', lastDry2.body)
-expect(lastDry2.body.includes('这一轮已经跑完'), '无预览时应当退回固定文案')
+console.log('无预览时行 ->', JSON.stringify(lastDry2.lines))
+expect(lastDry2.lines[0] === '另一个会话' && lastDry2.lines[1] === '这一轮已经跑完。', '无预览时应当退回固定文案（仍分两行）')
+
+// ── pending 通知：会话名与细节也分两行 ─────────────────────────────────
+const pendingNotify = await call(
+  route,
+  post({ kind: 'pending', label: '整理本周会议纪要', detail: '工具：shell', sessionId: 'session-pending', key: 'pending-lines' })
+)
+expect(pendingNotify.status === 200, 'pending 通知应当 200')
+const dryLines3 = readFileSync(join(dataDir, 'host.log'), 'utf8').split('\n').filter((line) => line.includes('notify-dry-run'))
+const lastDry3 = JSON.parse(dryLines3[dryLines3.length - 1])
+console.log('pending 行 ->', JSON.stringify(lastDry3.lines))
+expect(
+  lastDry3.lines[0] === '整理本周会议纪要' && lastDry3.lines[1] === '工具：shell',
+  'pending 通知也该是"会话名 / 细节"两行'
+)
 
 // ── pending：一条通知一个 token ───────────────────────────────────────
 const withSession = await call(route, post({ title: '带会话的通知', body: '用来验证点通知跳会话', key: 'pending-probe', sessionId: 'session-abc' }))
