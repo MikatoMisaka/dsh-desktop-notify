@@ -63,18 +63,22 @@ if (-not (Test-Path $exe)) {
   if (-not (Test-Path $exe)) { throw '编译失败，无法发布' }
 }
 
-# 4) 暂存副本
+# 4) 暂存副本：按 package.json 的 files 逐项拷贝（不再手写清单，新增目录不会漏）
 Write-Step ("准备暂存副本 " + $stage)
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
-$items = @(
-  'package.json', 'lib', 'scripts', 'native', 'bin', 'skills',
-  'cordis.patch.yml', 'README.md', 'LICENSE', 'selftest.mjs', 'client-selftest.mjs'
-)
+$sourcePkg = Get-Content (Join-Path $root 'package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$items = @('package.json') + @($sourcePkg.files)
+$skipped = @()
 foreach ($item in $items) {
   $src = Join-Path $root $item
-  if (-not (Test-Path $src)) { throw "缺少 $item，无法打包" }
+  if (-not (Test-Path $src)) {
+    # bin/ 在非 Windows 上本来就不存在（要现编），不是错误
+    $skipped += $item
+    continue
+  }
   Copy-Item $src (Join-Path $stage $item) -Recurse -Force
 }
+if ($skipped.Count -gt 0) { Write-Output ("    跳过（不存在）：" + ($skipped -join ', ')) }
 
 try {
   # 5) 改写清单（读时必须指定 UTF8：5.1 默认按 ANSI 读，中文 description 会变乱码）
@@ -131,7 +135,7 @@ try {
     Pop-Location
   }
 
-  # 9) 打包断言：files 里声明的东西必须真的进 tarball（npm 对缺失项静默忽略）
+  # 9) 打包断言：files 里声明的每一项都必须真的进 tarball（npm 对缺失项是静默忽略的）
   Write-Step '检查 tarball 内容'
   Push-Location $stage
   try {
@@ -139,14 +143,21 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'npm pack --dry-run 失败' }
     $pack = $packJson | ConvertFrom-Json
     $files = @($pack[0].files | ForEach-Object { $_.path })
-    $required = @(
-      'package.json', 'lib/index.js', 'lib/client.js', 'cordis.patch.yml',
-      'bin/focus-window.exe', 'skills/dsh-desktop-notify/SKILL.md'
-    )
-    foreach ($need in $required) {
-      if ($files -notcontains $need) { throw "tarball 里缺少 $need（files 声明了但没打进去）" }
+
+    # 每一项声明：要么本身在，要么有文件在它下面（目录展开）
+    foreach ($declared in @($sourcePkg.files)) {
+      $normalized = ($declared -replace '\\', '/').TrimEnd('/')
+      $present = @($files | Where-Object { $_ -eq $normalized -or $_.StartsWith($normalized + '/') })
+      if ($present.Count -eq 0) { throw "tarball 里缺少 files 声明的 $declared" }
     }
-    Write-Output ("    ok：" + $files.Count + " 个文件，关键项齐全")
+
+    # 关键文件：runtime 少了任何一个，装完都用不了
+    $required = @('package.json', 'lib/index.js', 'lib/client.js', 'cordis.patch.yml', 'README.md')
+    if ($env:OS -eq 'Windows_NT') { $required += 'bin/focus-window.exe' }
+    foreach ($need in $required) {
+      if ($files -notcontains $need) { throw "tarball 里缺少关键文件 $need" }
+    }
+    Write-Output ("    ok：" + $files.Count + " 个文件，files 声明全部命中，关键项齐全")
   } finally {
     Pop-Location
   }
